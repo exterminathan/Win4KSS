@@ -81,7 +81,7 @@ internal static class SettingsCli
 
     private static int Say(string text)
     {
-        NativeMethods.AttachConsole(uint.MaxValue); // ATTACH_PARENT_PROCESS
+        AttachUnlessRedirected(NativeMethods.StdOutputHandle);
         Console.Out.WriteLine(text);
         Log.Info("Settings CLI: " + text);
         return 0;
@@ -89,9 +89,21 @@ internal static class SettingsCli
 
     private static int Fail(string text)
     {
-        NativeMethods.AttachConsole(uint.MaxValue);
+        AttachUnlessRedirected(NativeMethods.StdErrorHandle);
         Console.Error.WriteLine("Win4KSS: " + text);
         Log.Warn("Settings CLI: " + text);
         return 1;
+    }
+
+    /// <summary>
+    /// A GUI-subsystem exe has no console, so output only reaches a terminal after attaching to
+    /// the parent's. But when the caller redirected the stream (an installer's <c>2&gt;file</c>),
+    /// the handle is already valid, and attaching would swap it for the console, losing the text.
+    /// </summary>
+    private static void AttachUnlessRedirected(int stdHandle)
+    {
+        var handle = NativeMethods.GetStdHandle(stdHandle);
+        if (handle == IntPtr.Zero || handle == new IntPtr(-1))
+            NativeMethods.AttachConsole(uint.MaxValue); // ATTACH_PARENT_PROCESS
     }
 }
