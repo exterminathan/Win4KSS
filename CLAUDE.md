@@ -131,6 +131,10 @@ The `harvest: "auto"` sources are harvested **in C#** (`Win4K.Core/Catalogs/`), 
 - **Never pass `--force-keyframes-at-cuts` to yt-dlp.** It forces a full re-encode: 3 min vs 13 s for the same 20 s 4K cut. Without it you get a stream copy; cuts just snap to the nearest keyframe.
 - **`4kmedia.org` is a trap:** the site is up and its specs are accurate, but all 159 downloads 404 — the Google Drive files are gone. Already recorded under `rejected`.
 
+## Packaging
+
+A real double-click installer lives in `installer/Win4KSS.iss` (Inno Setup 6), built by `scripts/build-installer.ps1`: fetches `libmpv-2.dll` if missing (a build-time input — `dotnet publish` empirically embeds it and `WebView2Loader.dll` *inside* `Win4KSS.exe`/`.scr` via `IncludeNativeLibrariesForSelfExtract`; neither shows up as a loose file in `publish/`), publishes, sanity-checks the output size, then compiles with Inno's `ISCC.exe` (installed via `winget install JRSoftware.InnoSetup` if missing) into `installer/output/Win4KSS-Setup-<version>.exe`. The installer calls `scripts/install-scr.ps1` itself for the registry/shortcut/SPI work (now takes `-PublishDir` so it can run from an installed copy, not just a repo clone) rather than reimplementing any of it in Pascal — see that script's updated `-Uninstall` branch for the two gaps closed while wiring this up: it now guards against a running `/s` instance the same way install does, and repoints/clears `SCRNSAVE.EXE` instead of leaving it pointing at a deleted file. End-user docs are `README.md`, `docs/THIRD-PARTY-NOTICES.md` (libmpv's GPL build — PLAN.md risk 7 — plus the CC BY-NC-ND / Pixabay / public-domain breakdown of the harvested catalogue), and `docs/TROUBLESHOOTING.md`.
+
 ## Notes for Claude
 
 - Git repo with a private GitHub remote (`origin`). Commit on `main`; **do not push unless asked**.
