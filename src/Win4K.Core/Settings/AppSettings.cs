@@ -80,11 +80,23 @@ public sealed class AppSettings
     public HashSet<string> KeptOffline { get; set; } = new(StringComparer.Ordinal);
 
     /// <summary>
-    /// ffmpeg for clip-browser previews. Null (the default) searches C:fmpegfmpeg.exe,
-    /// C:fmpeginfmpeg.exe, then PATH; see <see cref="Media.FfmpegLocator"/>. Without
+    /// ffmpeg for clip-browser previews. Null (the default) searches C:\ffmpeg\ffmpeg.exe,
+    /// C:\ffmpeg\bin\ffmpeg.exe, then PATH; see <see cref="Media.FfmpegLocator"/>. Without
     /// ffmpeg the browser gets remote thumbnails and placeholders, and no hover clips. Additive.
     /// </summary>
     public string? FfmpegPath { get; set; }
+
+    // ---- Settings v2 (Phase F). Fields land first as a contract for the browser; the v1 → v2
+    // migration that fills them, and the saver's use of them, follow in Phase F.
+
+    /// <summary>Clip keys (<see cref="Clip.Id"/>) the saver plays. Per-clip, across all sources.</summary>
+    public HashSet<string> RotationKeys { get; set; } = new(StringComparer.Ordinal);
+
+    /// <summary>Source ids whose newly harvested clips join <see cref="RotationKeys"/> automatically.</summary>
+    public HashSet<string> AutoAddSources { get; set; } = new(StringComparer.Ordinal);
+
+    /// <summary>Every clip key seen so far; a catalogue key missing from here is new.</summary>
+    public HashSet<string> KnownKeys { get; set; } = new(StringComparer.Ordinal);
 
     [JsonIgnore]
     public string ResolvedCacheDirectory =>
