@@ -17,6 +17,12 @@ internal static partial class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool AttachConsole(uint processId);
 
+    internal const int StdOutputHandle = -11;
+    internal const int StdErrorHandle = -12;
+
+    [LibraryImport("kernel32.dll")]
+    internal static partial IntPtr GetStdHandle(int stdHandle);
+
     [LibraryImport("user32.dll", SetLastError = true)]
     private static partial IntPtr SetParent(IntPtr child, IntPtr newParent);
 
