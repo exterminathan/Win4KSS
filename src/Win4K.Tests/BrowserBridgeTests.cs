@@ -832,6 +832,215 @@ public class BrowserBridgeTests : IDisposable
         Assert.Contains("1", Messages("notice").Single().GetProperty("text").GetString());
     }
 
+    // ---- export / import settings ------------------------------------------------------------
+
+    private string PortableFile(string name, Action<AppSettings> shape, PortableShortcuts? shortcuts = null)
+    {
+        var settings = NewSettings();
+        shape(settings);
+        var path = Path.Combine(_root, name + SettingsPortability.FileExtension);
+        SettingsPortability.WriteFile(SettingsPortability.Build(settings, Catalogue, shortcuts, "9.9", Now), path);
+        return path;
+    }
+
+    private static string BackupPath => Path.Combine(AppPaths.Root, SettingsPortability.BackupFileName);
+
+    [Fact]
+    public async Task Exporting_writes_the_readable_file_where_the_dialog_said_and_cancelling_writes_nothing()
+    {
+        using var _ = AppPaths.UseRoot(_root);
+        var built = await CreateReady();
+        Send(built.Bridge, new { type = "setRotation", keys = new[] { Nasa.Key }, value = true });
+        ClearPosted();
+
+        _host.SavePath = null;
+        Send(built.Bridge, new { type = "exportSettings" });
+        Assert.Empty(Messages());
+
+        _host.SavePath = Path.Combine(_root, "mine"); // typed without an extension
+        Send(built.Bridge, new { type = "exportSettings" });
+
+        var written = Path.Combine(_root, "mine" + SettingsPortability.FileExtension);
+        Assert.True(SettingsPortability.TryParseFile(written, out var file, out var error), error);
+        Assert.Contains(Nasa.Key, PortableSettings.KeysOf(file!.Rotation));
+        Assert.Contains(file.Rotation!.SelectMany(g => g.Clips), c => c.Key == Nasa.Key && c.Title == "Earth");
+        Assert.Equal(VideoQuality.Uhd4KSdr, file.Quality);
+        Assert.NotNull(file.Shortcuts);
+        Assert.Equal("info", Messages("notice").Single().GetProperty("level").GetString());
+    }
+
+    [Fact]
+    public async Task Importing_previews_first_then_replaces_rotation_pins_and_settings_only_when_confirmed()
+    {
+        using var _ = AppPaths.UseRoot(_root);
+        Directory.CreateDirectory(AppPaths.Root);
+        File.WriteAllText(AppPaths.SettingsFile, "{ \"previous\": true }");
+        var settings = NewSettings();
+        settings.Shuffle = true;
+        var built = await CreateReady(settings);
+        var rotationBefore = built.Settings.RotationKeys.ToList();
+        ClearPosted();
+
+        var other = Path.Combine(_root, "other-cache");
+        _host.OpenPath = PortableFile("in", s =>
+        {
+            s.Quality = VideoQuality.Hd1080Sdr;
+            s.Shuffle = false;
+            s.CacheBudgetGb = 30;
+            s.AutoAddSources = new(StringComparer.Ordinal) { "nasa" };
+            s.RotationKeys = new(StringComparer.Ordinal) { Apple.Key, Archive.Key, "apple:LATER" };
+            s.KeptOffline = new(StringComparer.Ordinal) { Apple.Key };
+            s.CacheDirectory = other;
+            s.LocalFolders = [Path.Combine(_root, "videos")];
+        }, new PortableShortcuts(true, false, ShortcutManager.DefaultHotkey));
+
+        Send(built.Bridge, new { type = "importSettings" });
+
+        var preview = Messages("importPreview").Single();
+        Assert.Equal(rotationBefore.Count, preview.GetProperty("rotation").GetProperty("before").GetInt32());
+        Assert.Equal(3, preview.GetProperty("rotation").GetProperty("after").GetInt32());
+        Assert.Equal(1, preview.GetProperty("rotation").GetProperty("notInCatalogue").GetInt32());
+        Assert.Equal(0, preview.GetProperty("pins").GetProperty("before").GetInt32());
+        Assert.Equal(1, preview.GetProperty("pins").GetProperty("after").GetInt32());
+        Assert.True(preview.GetProperty("pinsFit").GetBoolean());
+        Assert.True(preview.GetProperty("hasMachine").GetBoolean());
+        Assert.Equal(2, preview.GetProperty("machineChanges").GetArrayLength());
+        Assert.Contains(preview.GetProperty("changes").EnumerateArray().Select(c => c.GetString()), c => c == "Quality: Uhd4KSdr → Hd1080Sdr");
+        Assert.Equal("in" + SettingsPortability.FileExtension, preview.GetProperty("fileName").GetString());
+
+        // Nothing has changed yet.
+        Assert.Equal(rotationBefore.Order(), built.Settings.RotationKeys.Order());
+        Assert.True(built.Settings.Shuffle);
+        Assert.False(File.Exists(BackupPath));
+
+        ClearPosted();
+        Send(built.Bridge, new { type = "confirmImport", apply = true, includeMachine = false });
+
+        Assert.Equal(new[] { Apple.Key, Archive.Key, "apple:LATER" }.Order(), built.Settings.RotationKeys.Order()); // the unknown key stays
+        Assert.Equal(new[] { "nasa" }, built.Settings.AutoAddSources);
+        Assert.Equal(VideoQuality.Hd1080Sdr, built.Settings.Quality);
+        Assert.False(built.Settings.Shuffle);
+        Assert.Equal(30, built.Settings.CacheBudgetGb);
+        Assert.Equal(new[] { Apple.Key }, built.Settings.KeptOffline);
+        Assert.NotNull(built.Queue.Get(Apple.Key)); // the pin is queued to download
+        Assert.Equal(Path.Combine(_root, "cache"), built.Settings.CacheDirectory); // machine section skipped
+        Assert.Empty(built.Settings.LocalFolders);
+        Assert.Equal("{ \"previous\": true }", File.ReadAllText(BackupPath));
+        Assert.Equal(new ShortcutOptions(true, false, ShortcutManager.DefaultHotkey), _host.Shortcuts);
+
+        // The page is told live.
+        Assert.True(ClipState(LastState(), Archive.Key).GetProperty("inRotation").GetBoolean());
+        Assert.True(ClipState(LastState(), Apple.Key).GetProperty("pinned").GetBoolean());
+        Assert.Equal(["nasa"], Messages("settings").Last().GetProperty("values").GetProperty("autoAddSources").EnumerateArray().Select(s => s.GetString()));
+        Assert.Contains("Imported settings", Messages("notice").Last().GetProperty("text").GetString());
+        Assert.Contains("1 not in this catalogue", Messages("notice").Last().GetProperty("text").GetString());
+    }
+
+    [Fact]
+    public async Task Importing_with_the_machine_option_applies_the_machine_section_too()
+    {
+        using var _ = AppPaths.UseRoot(_root);
+        var built = await CreateReady();
+        var other = Path.Combine(_root, "other-cache");
+        var videos = Path.Combine(_root, "videos");
+        _host.OpenPath = PortableFile("in", s => { s.CacheDirectory = other; s.LocalFolders = [videos]; s.FfmpegPath = @"C:\x\ffmpeg.exe"; });
+
+        Send(built.Bridge, new { type = "importSettings" });
+        Send(built.Bridge, new { type = "confirmImport", apply = true, includeMachine = true });
+        await built.Bridge.Background;
+
+        Assert.Equal(other, built.Settings.CacheDirectory);
+        Assert.Equal([videos], built.Settings.LocalFolders);
+        Assert.Equal(@"C:\x\ffmpeg.exe", built.Settings.FfmpegPath);
+        Assert.Contains(Messages("notice"), n => n.GetProperty("text").GetString()!.Contains("cache folder"));
+    }
+
+    [Fact]
+    public async Task Declining_the_import_changes_nothing_and_a_confirmation_with_nothing_pending_is_refused()
+    {
+        using var _ = AppPaths.UseRoot(_root);
+        var built = await CreateReady();
+        var before = built.Settings.RotationKeys.Order().ToList();
+        _host.OpenPath = PortableFile("in", s => s.RotationKeys = new(StringComparer.Ordinal) { Nasa.Key });
+
+        Send(built.Bridge, new { type = "importSettings" });
+        Send(built.Bridge, new { type = "confirmImport", apply = false, includeMachine = false });
+        Assert.Equal(before, built.Settings.RotationKeys.Order());
+        Assert.False(File.Exists(BackupPath));
+
+        ClearPosted();
+        Send(built.Bridge, new { type = "confirmImport", apply = true, includeMachine = false }); // already answered
+        Assert.Equal(before, built.Settings.RotationKeys.Order());
+        Assert.Equal("warning", Messages("notice").Single().GetProperty("level").GetString());
+    }
+
+    [Fact]
+    public async Task A_file_that_is_not_a_settings_export_is_rejected_with_an_error_notice()
+    {
+        using var _ = AppPaths.UseRoot(_root);
+        var built = await CreateReady();
+        var path = Path.Combine(_root, "not-ours.json");
+        File.WriteAllText(path, "{ \"version\": 2, \"quality\": \"Auto\" }");
+        _host.OpenPath = path;
+        ClearPosted();
+
+        Send(built.Bridge, new { type = "importSettings" });
+
+        Assert.Empty(Messages("importPreview"));
+        var notice = Messages("notice").Single();
+        Assert.Equal("error", notice.GetProperty("level").GetString());
+        Assert.Contains("not a Win4KSS settings export", notice.GetProperty("text").GetString());
+
+        // Cancelling the dialog is silent.
+        _host.OpenPath = null;
+        ClearPosted();
+        Send(built.Bridge, new { type = "importSettings" });
+        Assert.Empty(Messages());
+    }
+
+    [Fact]
+    public async Task Import_waits_for_the_catalogue()
+    {
+        using var _ = AppPaths.UseRoot(_root);
+        var built = Create(); // never initialised: no catalogue yet
+        Send(built.Bridge, new { type = "ready" });
+        _host.OpenPath = PortableFile("in", _ => { });
+        ClearPosted();
+
+        Send(built.Bridge, new { type = "importSettings" });
+
+        Assert.Empty(Messages("importPreview"));
+        Assert.Equal("warning", Messages("notice").Single().GetProperty("level").GetString());
+        await Task.CompletedTask;
+    }
+
+    [Fact]
+    public async Task Pins_over_the_cache_limit_are_skipped_with_the_raise_limit_prompt_and_everything_else_is_imported()
+    {
+        using var _ = AppPaths.UseRoot(_root);
+        var built = await CreateReady();
+        _host.OpenPath = PortableFile("in", s =>
+        {
+            s.CacheBudgetGb = 1; // Apple 700 MB + Archive 600 MB do not fit
+            s.Shuffle = false;
+            s.RotationKeys = new(StringComparer.Ordinal) { Apple.Key };
+            s.KeptOffline = new(StringComparer.Ordinal) { Apple.Key, Archive.Key };
+        });
+
+        Send(built.Bridge, new { type = "importSettings" });
+        Assert.False(Messages("importPreview").Single().GetProperty("pinsFit").GetBoolean());
+        ClearPosted();
+        Send(built.Bridge, new { type = "confirmImport", apply = true, includeMachine = false });
+
+        Assert.Empty(built.Settings.KeptOffline);                         // pins skipped
+        Assert.Equal([Apple.Key], built.Settings.RotationKeys);           // the rotation went in
+        Assert.False(built.Settings.Shuffle);                             // and the other settings
+        var refused = Messages("pinRefused").Single();
+        Assert.Equal(2, refused.GetProperty("keys").GetArrayLength());
+        Assert.Equal(2, refused.GetProperty("requiredGb").GetInt32());
+        Assert.Equal("warning", Messages("notice").Last().GetProperty("level").GetString());
+    }
+
     // ---- pure helpers ------------------------------------------------------------------------
 
     [Fact]
@@ -846,6 +1055,19 @@ public class BrowserBridgeTests : IDisposable
         Assert.Equal(Rectangle.Empty, (rect with { Visible = false }).ToDevicePixels(1, 96));
         Assert.Equal(Rectangle.Empty, new PanelRect(0, 0, 0, 100, true).ToDevicePixels(1, 96));
         Assert.Equal(Rectangle.Empty, new PanelRect(double.NaN, 0, 10, 10, true).ToDevicePixels(1, 96));
+    }
+
+    [Fact]
+    public void Importing_shortcuts_treats_the_same_hotkey_in_another_spelling_as_no_change()
+    {
+        var current = new ShortcutOptions(true, true, "Alt+Ctrl+S"); // what a .lnk reports
+        Assert.Equal(current, SettingsCli.Merge(current, new PortableShortcuts(true, true, "CTRL+ALT+S")));
+        Assert.Equal(current, SettingsCli.Merge(current, null));
+        Assert.Equal(current with { Hotkey = "CTRL+SHIFT+F5" }, SettingsCli.Merge(current, new PortableShortcuts(null, null, "Ctrl+Shift+F5")));
+        Assert.Equal(current with { Hotkey = null }, SettingsCli.Merge(current, new PortableShortcuts(null, null, "")));
+        Assert.Equal(current, SettingsCli.Merge(current, new PortableShortcuts(null, null, "garbage"))); // unusable: ignored
+        Assert.Equal("CTRL+ALT+S", SettingsCli.ToPortable(current).Hotkey);
+        Assert.Equal("", SettingsCli.ToPortable(current with { Hotkey = null }).Hotkey);
     }
 
     [Theory]
@@ -898,6 +1120,10 @@ public class BrowserBridgeTests : IDisposable
         }
 
         public string? PickFolder(string title, string? initialPath) => PickResult;
+        public string? SavePath { get; set; }
+        public string? OpenPath { get; set; }
+        public string? PickSaveFile(string title, string suggestedName, string filter) => SavePath;
+        public string? PickOpenFile(string title, string filter) => OpenPath;
         public void OpenFolder(string path) => Opened.Add(path);
     }
 }

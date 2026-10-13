@@ -27,6 +27,12 @@ public interface IBrowserHost
     /// <summary>A native folder picker. Null when cancelled.</summary>
     string? PickFolder(string title, string? initialPath);
 
+    /// <summary>A native Save dialog (<paramref name="filter"/> is the WinForms "name|pattern|…" form). Null when cancelled.</summary>
+    string? PickSaveFile(string title, string suggestedName, string filter);
+
+    /// <summary>A native Open dialog. Null when cancelled.</summary>
+    string? PickOpenFile(string title, string filter);
+
     void OpenFolder(string path);
 }
 

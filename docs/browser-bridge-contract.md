@@ -330,3 +330,46 @@ What changed when the page and the host first ran together:
 - **Nothing overlaps the video box:** the detail pane's close button moved to a title row
   above it, the preview is sticky at the top of the pane, and toasts moved to the bottom
   right.
+
+## Integration changes: export / import settings
+
+One readable file (`*.win4kss.json`, written by `Win4K.Core/Settings/SettingsPortability.cs`)
+moves a setup to another machine. UI: Settings > About > "Backup / move to another machine".
+
+Page -> host:
+
+| Message | Payload | Effect |
+|---|---|---|
+| `exportSettings` | `{}` | Host shows the native Save dialog, writes the file, answers with a `notice` (info, or error). Cancel is silent. |
+| `importSettings` | `{}` | Host shows the native Open dialog, validates the file, and answers with `importPreview` (below), or an error `notice` if it is not this format. Nothing changes yet. Warns (`notice`) if the catalogue is still loading. |
+| `confirmImport` | `{ apply: bool, includeMachine: bool }` | `apply: false` drops the pending import. `apply: true` backs `settings.json` up to `settings.before-import.json` (overwriting the previous backup), then applies the file and answers with `settings`, `stateDelta`, `cacheStats` and a summary `notice`. `includeMachine` also applies the file's `machine` section. With nothing pending the host answers with a warning `notice`. |
+
+Host -> page:
+
+```json
+{ "type": "importPreview", "fileName": "a.win4kss.json", "appVersion": "1.0.0.0", "exportedUtc": "2026-10-13T23:10:39Z",
+  "formatVersion": 1, "newerFormat": false,
+  "rotation": { "before": 114, "after": 1400, "added": 1286, "removed": 0, "notInCatalogue": 0 },
+  "pins":     { "before": 0, "after": 3, "added": 0, "removed": 0, "notInCatalogue": 0 },
+  "changes": ["Quality: Auto → Uhd4KSdr", "Cache limit: 20 → 40 GB"],
+  "hasMachine": true, "machineChanges": ["Cache folder: default → D:\Cache"],
+  "pinsFit": true, "pinsRequiredGb": 1.0, "budgetGb": 40 }
+```
+The page shows it in the confirm dialog (which hides the native panel like every overlay) with an
+"also apply machine settings" checkbox, default off, shown only when `machineChanges` is non-empty.
+
+Import rules: rotation, kept-offline and auto-add are **replaced** by the file's sections (a section
+missing from the file is left alone). Rotation keys the catalogue does not list stay in the rotation.
+Kept-offline goes through `PinManager`: keys not in the catalogue are skipped; if the file's pins do not
+fit the cache limit, pins are left unchanged, everything else is applied, and a standard `pinRefused`
+("Raise limit to N GB") follows. `KnownKeys` and `FailedClips` are never imported.
+
+File format: `about` (what it is, app version, export date, `format`, `formatVersion: 1`, how to import),
+`playback`, `cache`, `sources.autoAdd`, `shortcuts`, `machine` (cache folder, local folders, ffmpeg path;
+skipped unless asked), `keptOffline` and `rotation` (grouped by source, one `{ "key", "title" }` per line;
+only the key is read). Unknown or missing members are tolerated.
+
+CLI (no window): `Win4KSS.exe --export-settings FILE`, `Win4KSS.exe --import-settings FILE [--include-machine]`
+(FILE must directly follow the verb). Exit 0 ok, 1 bad usage / unreadable or invalid file (message on
+stderr), 2 unexpected error. Output goes to the parent console, or redirect it. CLI import does not download:
+pins that fit the budget are recorded and fetched the next time the browser opens.

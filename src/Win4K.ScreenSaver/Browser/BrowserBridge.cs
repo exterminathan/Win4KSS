@@ -96,6 +96,7 @@ public sealed class BrowserBridge : IDisposable
     private bool _refreshing;
     private string? _selectedKey;
     private ShortcutOptions? _shortcuts;
+    private PortableSettings? _pendingImport;
 
     private readonly Dictionary<string, ClipStateDto> _sent = new(StringComparer.Ordinal);
     private readonly HashSet<string> _dirty = new(StringComparer.Ordinal);
@@ -172,7 +173,11 @@ public sealed class BrowserBridge : IDisposable
     }
 
     /// <summary>The page is navigating away (reload, crash). Nothing is posted until its next <c>ready</c>.</summary>
-    public void PageUnloaded() => _pageReady = false;
+    public void PageUnloaded()
+    {
+        _pageReady = false;
+        _pendingImport = null; // the dialog that would answer it is gone
+    }
 
     // ---- page → host -------------------------------------------------------------------------
 
@@ -286,6 +291,18 @@ public sealed class BrowserBridge : IDisposable
 
             case "openFolder":
                 OpenFolder(Str(m, "which"));
+                break;
+
+            case "exportSettings":
+                ExportSettings();
+                break;
+
+            case "importSettings":
+                ImportSettings();
+                break;
+
+            case "confirmImport":
+                ConfirmImport(Bool(m, "apply") ?? false, Bool(m, "includeMachine") ?? false);
                 break;
 
             case "log":
@@ -500,6 +517,171 @@ public sealed class BrowserBridge : IDisposable
         }
     }
 
+    // ---- export / import settings ------------------------------------------------------------
+
+    private const string SettingsFileFilter = "Win4KSS settings (*.win4kss.json)|*.win4kss.json|JSON files (*.json)|*.json|All files (*.*)|*.*";
+
+    /// <summary>
+    /// <c>exportSettings</c>: the host's Save dialog, then the readable file
+    /// (<see cref="SettingsPortability"/>). Answered with a notice.
+    /// </summary>
+    private void ExportSettings()
+    {
+        var suggested = $"win4kss-settings-{_time.GetUtcNow():yyyy-MM-dd}{SettingsPortability.FileExtension}";
+        var path = _host.PickSaveFile("Export settings", suggested, SettingsFileFilter);
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+        if (!Path.GetExtension(path).Equals(".json", StringComparison.OrdinalIgnoreCase))
+            path += SettingsPortability.FileExtension;
+
+        try
+        {
+            var model = SettingsPortability.Build(_settings, _catalog, SettingsCli.ToPortable(CurrentShortcuts),
+                typeof(BrowserBridge).Assembly.GetName().Version?.ToString(), _time.GetUtcNow().UtcDateTime);
+            SettingsPortability.WriteFile(model, path);
+            Log.Info($"Browser: exported settings to {path}");
+            Notice("info", $"Exported settings to {path}: {PortableSettings.KeysOf(model.Rotation).Count:N0} clips in the rotation, " +
+                           $"{PortableSettings.KeysOf(model.KeptOffline).Count:N0} kept offline.");
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Browser: settings export failed", ex);
+            Notice("error", "Could not export settings: " + ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// <c>importSettings</c>: the host's Open dialog, validate, then an <c>importPreview</c> for the
+    /// page to confirm. Nothing changes until <c>confirmImport</c> arrives.
+    /// </summary>
+    private void ImportSettings()
+    {
+        _pendingImport = null;
+        if (!_catalogLoaded)
+        {
+            Notice("warning", "The clip catalogue is still loading. Try importing again in a moment.");
+            return;
+        }
+
+        var path = _host.PickOpenFile("Import settings", SettingsFileFilter);
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
+        if (!SettingsPortability.TryParseFile(path, out var file, out var error))
+        {
+            Log.Warn($"Browser: settings import rejected ({path}): {error}");
+            Notice("error", error ?? "That file could not be read.");
+            return;
+        }
+
+        var plan = SettingsPortability.Plan(_settings, file!, _catalog, SettingsCli.ToPortable(CurrentShortcuts));
+
+        // Would the file's kept-offline clips fit the (file's) cache limit?
+        var wanted = PortableSettings.KeysOf(file!.KeptOffline).Where(k => Pins.TargetClip(k) is not null).ToList();
+        var requiredBytes = wanted.Sum(Pins.EstimatedBytes);
+        var budgetGb = file.CacheBudgetGb is { } gb && double.IsFinite(gb) ? Math.Clamp(gb, 1, 100_000) : _settings.CacheBudgetGb;
+
+        _pendingImport = file;
+        Log.Info($"Browser: settings import from {path} awaiting confirmation");
+        Post(new ImportPreviewMessage(
+            Path.GetFileName(path), file.AppVersion, file.ExportedUtc, file.FormatVersion,
+            file.FormatVersion > SettingsPortability.FormatVersion,
+            new ImportCountDto(plan.RotationBefore, plan.RotationAfter, plan.RotationAdded, plan.RotationRemoved, plan.RotationNotInCatalogue),
+            new ImportCountDto(plan.PinsBefore, plan.PinsAfter, 0, 0, plan.PinsNotInCatalogue),
+            plan.Changes, plan.HasMachine, plan.MachineChanges,
+            requiredBytes <= budgetGb * GiB, Math.Ceiling(requiredBytes / GiB * 10) / 10, budgetGb));
+    }
+
+    /// <summary>
+    /// <c>confirmImport</c>: apply (or drop) the file validated by the last <c>importSettings</c>.
+    /// Backs settings.json up to settings.before-import.json first, then goes through the same
+    /// primitives as <c>saveSettings</c>/<c>setRotation</c>/<c>setPinned</c> so the page updates live.
+    /// </summary>
+    private void ConfirmImport(bool apply, bool includeMachine)
+    {
+        var file = _pendingImport;
+        _pendingImport = null;
+        if (!apply)
+            return;
+        if (file is null)
+        {
+            Notice("warning", "There is no import waiting to be applied. Choose Import settings… again.");
+            return;
+        }
+
+        // The backup must be what is live right now, not what the debounce last wrote.
+        ScheduleSave();
+        FlushSave();
+        var backedUp = SettingsPortability.BackUp();
+
+        var applied = SettingsPortability.Apply(_settings, file, includeMachine);
+        var notes = new List<string>();
+
+        // Kept offline goes through PinManager and the budget. Over budget: skip the pins, keep
+        // everything else, and offer the standard "raise the limit" prompt.
+        if (applied.PinKeys is { } pinKeys)
+        {
+            var resolvable = pinKeys.Where(k => Pins.TargetClip(k) is not null).ToHashSet(StringComparer.Ordinal);
+            var required = resolvable.Sum(Pins.EstimatedBytes);
+            if (required <= _settings.CacheBudgetBytes)
+            {
+                Pins.Unpin(_settings.KeptOffline.Where(k => !resolvable.Contains(k)).ToList());
+                Pins.Pin(resolvable);
+                if (pinKeys.Count > resolvable.Count)
+                    notes.Add($"{pinKeys.Count - resolvable.Count:N0} kept-offline clip(s) are not in this catalogue and were skipped");
+            }
+            else
+            {
+                var missing = resolvable.Where(k => !_settings.KeptOffline.Contains(k)).ToList();
+                var check = new PinCheck(false, required, _settings.CacheBudgetBytes, missing, []);
+                Log.Info($"Browser: import skipped pins: {VideoCache.FormatSize(required)} over a {VideoCache.FormatSize(check.BudgetBytes)} limit");
+                notes.Add("kept-offline clips were not changed: they do not fit the cache limit");
+                if (missing.Count > 0)
+                    Post(PinRefusedMessage.From(missing, check, _settings.CacheBudgetGb));
+            }
+        }
+
+        if (file.Shortcuts is { } wantedShortcuts)
+        {
+            var current = CurrentShortcuts;
+            var target = SettingsCli.Merge(current, wantedShortcuts);
+            if (target != current)
+            {
+                if (!_host.ApplyShortcuts(target))
+                    notes.Add("the shortcuts could not be updated (see win4k.log)");
+                _shortcuts = _host.ReadShortcuts();
+            }
+        }
+
+        if (applied.QualityChanged)
+            Pins.SyncPins();
+        if (applied.BudgetLowered)
+            EvictInBackground();
+        if (applied.CacheDirectoryChanged)
+            Notice("info", "The imported cache folder is used the next time the browser or screen saver starts. Existing clips are not moved.");
+        if (applied.FfmpegPathChanged)
+            Notice("info", "The ffmpeg path takes effect the next time the browser opens.");
+
+        ScheduleSave();
+        FlushSave(); // other processes (the saver) read the rotation from disk
+        _allDirty = true;
+        _statsDirty = true;
+        PostSettings();
+        FlushState();
+
+        if (applied.LocalFoldersChanged)
+            Background = LoadCatalogAsync(initial: false);
+
+        var unknown = _settings.RotationKeys.Count(k => !_byKey.ContainsKey(k));
+        var text2 = $"Imported settings: {_settings.RotationKeys.Count:N0} clips in the rotation" +
+                    (unknown > 0 ? $" ({unknown:N0} not in this catalogue yet; they stay and join once it lists them)" : "") +
+                    $", {_settings.KeptOffline.Count:N0} kept offline." +
+                    (notes.Count > 0 ? " Note: " + string.Join("; ", notes) + "." : "") +
+                    (backedUp ? $" Your previous settings are in {SettingsPortability.BackupFileName}." : "");
+        Log.Info("Browser: " + text2);
+        Notice(notes.Count > 0 ? "warning" : "info", text2);
+    }
+
     // ---- settings ----------------------------------------------------------------------------
 
     /// <summary>
@@ -646,19 +828,22 @@ public sealed class BrowserBridge : IDisposable
 
         // A lower limit should free the space now rather than at the next download.
         if (lowered)
+            EvictInBackground();
+    }
+
+    private void EvictInBackground()
+    {
+        Task.Run(() =>
         {
-            Task.Run(() =>
+            try
             {
-                try
-                {
-                    _cache.EvictToBudget();
-                }
-                catch (Exception ex)
-                {
-                    Log.Error("Browser: eviction after lowering the budget failed", ex);
-                }
-            });
-        }
+                _cache.EvictToBudget();
+            }
+            catch (Exception ex)
+            {
+                Log.Error("Browser: eviction after lowering the budget failed", ex);
+            }
+        });
     }
 
     private void SetCacheDirectory(string? folder)

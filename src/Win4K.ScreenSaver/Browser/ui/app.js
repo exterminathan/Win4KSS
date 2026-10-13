@@ -1365,6 +1365,17 @@
         <tr><th>Cache</th><td><code id="about-cache"></code></td><td><button type="button" class="btn" data-open="cache">Open</button></td></tr>
         <tr><th>Previews</th><td><code id="about-previews"></code></td><td><button type="button" class="btn" data-open="previews">Open</button></td></tr>
       </table>
+      <h3>Backup / move to another machine</h3>
+      <p class="settings-hint">
+        Export your choices to one readable file: playback and cache settings, shortcuts, the
+        rotation and the clips kept offline (each listed by name). Import it on another machine and
+        the catalogue rebuilds itself there. Videos and catalogues are not included. Importing
+        asks first, and keeps your current settings as settings.before-import.json.
+      </p>
+      <div class="settings-row">
+        <button id="settings-export" type="button" class="btn">Export settings…</button>
+        <button id="settings-import" type="button" class="btn">Import settings…</button>
+      </div>
       <p class="settings-hint">
         Apple's aerial CDN presents a certificate chaining to Apple Root CA, which Windows does
         not trust out of the box. Rather than disabling verification, Win4KSS pins Apple's real
@@ -1375,6 +1386,45 @@
     for (const btn of p.querySelectorAll('[data-open]')) {
       btn.addEventListener('click', () => Bridge.send('openFolder', { which: btn.dataset.open }));
     }
+    document.getElementById('settings-export').addEventListener('click', () => Bridge.send('exportSettings', {}));
+    document.getElementById('settings-import').addEventListener('click', () => Bridge.send('importSettings', {}));
+  }
+
+  /** The host validated a settings file; show what importing would change and send the answer. */
+  async function showImportPreview(msg) {
+    const n = (v) => Number(v || 0).toLocaleString();
+    const rot = msg.rotation || {};
+    const pins = msg.pins || {};
+    const details = [
+      `Rotation: ${n(rot.before)} → ${n(rot.after)} clips (${n(rot.added)} added, ${n(rot.removed)} removed)`,
+      `Kept offline: ${n(pins.before)} → ${n(pins.after)} clips`,
+      ...(msg.changes || []),
+    ];
+    if (rot.notInCatalogue) {
+      details.push({ warn: false, text: `${n(rot.notInCatalogue)} rotation clip${rot.notInCatalogue === 1 ? ' is' : 's are'} not in this catalogue yet; they stay in the rotation and play once a refresh lists them.` });
+    }
+    if (pins.notInCatalogue) {
+      details.push({ warn: true, text: `${n(pins.notInCatalogue)} kept-offline clip${pins.notInCatalogue === 1 ? ' is' : 's are'} not in this catalogue and will be skipped.` });
+    }
+    if (pins.after && !msg.pinsFit) {
+      details.push({ warn: true, text: `Keeping those clips offline needs about ${msg.pinsRequiredGb} GB, over the ${msg.budgetGb} GB cache limit. Everything else is imported; you will be asked about raising the limit.` });
+    }
+    if (msg.newerFormat) {
+      details.push({ warn: true, text: 'This file was made by a newer version; anything this version does not know is ignored.' });
+    }
+
+    const when = msg.exportedUtc ? new Date(msg.exportedUtc).toLocaleDateString() : 'an unknown date';
+    const machine = msg.machineChanges || [];
+    const checkbox = msg.hasMachine && machine.length
+      ? { label: `Also apply this file’s machine settings (${machine.join('; ')})`, checked: false }
+      : null;
+
+    const answer = await confirmDialog(
+      `Import “${msg.fileName}”, exported ${when}${msg.appVersion ? ' by Win4KSS ' + msg.appVersion : ''}? ` +
+      'This replaces your rotation, kept-offline clips and auto-add sources. Your current settings are copied to settings.before-import.json first.',
+      [{ label: 'Import', value: 'yes', accent: true }, { label: 'Cancel', value: 'no' }],
+      { details, checkbox });
+    Bridge.send('confirmImport', { apply: answer === 'yes', includeMachine: answer === 'yes' && confirmDialog.checked === true });
   }
 
   /** "CTRL+ALT+S" or "Alt+Ctrl+S" (what a .lnk reports) -> "Ctrl+Alt+S". */
@@ -1493,14 +1543,49 @@
 
   /** An in-page modal (a native confirm() would also work, but this one hides the native
    *  preview panel and matches the theme). Resolves to the chosen button's value, or null. */
-  function confirmDialog(message, buttons) {
+  function confirmDialog(message, buttons, opts) {
     return new Promise((resolve) => {
       const overlay = document.getElementById('confirm-overlay');
       const actions = document.getElementById('confirm-actions');
+      const extra = document.getElementById('confirm-extra');
       document.getElementById('confirm-message').textContent = message;
       actions.innerHTML = '';
+      extra.innerHTML = '';
+      extra.classList.add('hidden');
+
+      // Optional: opts.details (strings, or {text, warn}) as a list, opts.checkbox {label, checked}.
+      // The checkbox's final state is left in confirmDialog.checked for the caller.
+      let box = null;
+      const details = (opts && opts.details) || [];
+      if (details.length) {
+        const list = document.createElement('ul');
+        list.className = 'confirm-details';
+        for (const d of details) {
+          const li = document.createElement('li');
+          li.textContent = typeof d === 'string' ? d : d.text;
+          if (typeof d !== 'string' && d.warn) li.className = 'is-warning';
+          list.appendChild(li);
+        }
+        extra.appendChild(list);
+      }
+      if (opts && opts.checkbox) {
+        const label = document.createElement('label');
+        label.className = 'confirm-check';
+        box = document.createElement('input');
+        box.type = 'checkbox';
+        box.checked = !!opts.checkbox.checked;
+        const text = document.createElement('span');
+        text.textContent = opts.checkbox.label;
+        label.append(box, text);
+        extra.appendChild(label);
+      }
+      if (extra.children.length) extra.classList.remove('hidden');
+      confirmDialog.checked = false;
+
       const finish = (value) => {
+        confirmDialog.checked = box ? box.checked : false;
         overlay.classList.add('hidden');
+        extra.classList.add('hidden');
         document.removeEventListener('keydown', onKey, true);
         schedulePanelUpdate();
         resolve(value);
@@ -1645,6 +1730,8 @@
       if (failed.length) text += ` Failed: ${failed.map((s) => `${sourceName(s.sourceId) || s.sourceId}${s.error ? ' (' + s.error + ')' : ''}`).join(', ')}.`;
       showToast(text, { level: failed.length ? 'warning' : 'info' });
     });
+
+    Bridge.on('importPreview', (msg) => { showImportPreview(msg); });
 
     Bridge.on('notice', (msg) => showToast(msg.text, { level: msg.level }));
   }

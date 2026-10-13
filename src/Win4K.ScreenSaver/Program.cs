@@ -18,6 +18,8 @@ internal static class Program
     ///   Win4KSS.scr /s         run full screen
     ///   Win4KSS.scr /w         run in a normal resizable window   (ours)
     ///   Win4KSS.scr /now       start the configured saver at once (ours)
+    ///   Win4KSS.exe --export-settings FILE                     write the readable settings export; no window (ours)
+    ///   Win4KSS.exe --import-settings FILE [--include-machine] apply one; FILE must directly follow the verb (ours)
     ///
     /// Run as Win4KSS.exe with no arguments it opens the window, because double-clicking
     /// an exe to get a settings dialog is surprising. Same binary, two extensions.
@@ -57,6 +59,12 @@ internal static class Program
                 case Verb.StartNow:
                     return StartNow();
 
+                case Verb.ExportSettings:
+                    return SettingsCli.Export(argument);
+
+                case Verb.ImportSettings:
+                    return SettingsCli.Import(argument, args.Contains("--include-machine", StringComparer.OrdinalIgnoreCase));
+
                 default:
                     MessageBox.Show($"Unrecognised argument: {argument}", "Win4KSS",
                         MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -79,6 +87,8 @@ internal static class Program
         FullScreen,
         Window,
         StartNow,
+        ExportSettings,
+        ImportSettings,
         Unknown,
     }
 
@@ -114,6 +124,8 @@ internal static class Program
             "s" or "show" => Verb.FullScreen,
             "w" or "window" or "windowed" => Verb.Window,
             "now" or "start" or "lock" => Verb.StartNow,
+            "export-settings" => Verb.ExportSettings,
+            "import-settings" => Verb.ImportSettings,
             _ => Verb.Unknown,
         };
 
@@ -123,7 +135,12 @@ internal static class Program
     // ---- verbs ----------------------------------------------------------------------------
 
     /// <summary>The single-instance mutex of the clip browser, per session.</summary>
-    internal const string BrowserMutexName = @"Local\Win4KSS.Browser";
+    /// <remarks>Scoped by the data root only when WIN4K_HOME overrides it, so a test or smoke run on a copy of the profile is its own instance.</remarks>
+    internal static string BrowserMutexName =>
+        string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(AppPaths.HomeOverrideVariable))
+            ? @"Local\Win4KSS.Browser"
+            : @"Local\Win4KSS.Browser." + Convert.ToHexString(
+                System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(AppPaths.Root.ToLowerInvariant())))[..8];
 
     internal const string WebView2RuntimeUrl = "https://go.microsoft.com/fwlink/p/?LinkId=2124703";
 

@@ -28,6 +28,33 @@ public class ArgumentParsingTests
         Assert.Equal(expected, Program.ParseArguments([arg]).Verb.ToString());
     }
 
+    [Theory]
+    [InlineData("--export-settings", "ExportSettings")]
+    [InlineData("--IMPORT-SETTINGS", "ImportSettings")]
+    [InlineData("/import-settings", "ImportSettings")]
+    public void Settings_cli_verbs_parse(string arg, string expected)
+    {
+        Assert.Equal(expected, Program.ParseArguments([arg]).Verb.ToString());
+    }
+
+    [Theory]
+    [InlineData(new[] { "--export-settings", @"C:\Users\me\my settings.win4kss.json" }, @"C:\Users\me\my settings.win4kss.json")]
+    [InlineData(new[] { "--import-settings", @"D:\backup\a.win4kss.json", "--include-machine" }, @"D:\backup\a.win4kss.json")]
+    [InlineData(new[] { @"--export-settings=C:\x\a.json" }, @"C:\x\a.json")]
+    public void Settings_cli_verbs_take_the_file_that_follows(string[] args, string expectedPath)
+    {
+        var (verb, argument) = Program.ParseArguments(args);
+
+        Assert.True(verb is Program.Verb.ExportSettings or Program.Verb.ImportSettings);
+        Assert.Equal(expectedPath, argument);
+    }
+
+    [Fact]
+    public void Settings_cli_verbs_without_a_file_report_no_argument()
+    {
+        Assert.Null(Program.ParseArguments(["--export-settings"]).Argument);
+    }
+
     [Fact]
     public void Colon_packed_configure_yields_the_owner_handle()
     {

@@ -329,6 +329,21 @@ internal sealed class BrowserForm : Form, IBrowserHost
         return dialog.ShowDialog(this) == DialogResult.OK ? dialog.SelectedPath : null;
     }
 
+    public string? PickSaveFile(string title, string suggestedName, string filter)
+    {
+        using var dialog = new SaveFileDialog
+        {
+            Title = title, FileName = suggestedName, Filter = filter, OverwritePrompt = true, AddExtension = false,
+        };
+        return dialog.ShowDialog(this) == DialogResult.OK ? dialog.FileName : null;
+    }
+
+    public string? PickOpenFile(string title, string filter)
+    {
+        using var dialog = new OpenFileDialog { Title = title, Filter = filter, CheckFileExists = true };
+        return dialog.ShowDialog(this) == DialogResult.OK ? dialog.FileName : null;
+    }
+
     public void OpenFolder(string path)
     {
         try

@@ -206,6 +206,30 @@ internal sealed record RefreshProgressMessage(
         new(false, null, null, null, null, false, [], error);
 }
 
+// ---- settings import ------------------------------------------------------------------------
+
+/// <param name="NotInCatalogue">Keys the current catalogue does not list (rotation: kept anyway; kept offline: skipped).</param>
+internal sealed record ImportCountDto(int Before, int After, int Added, int Removed, int NotInCatalogue);
+
+/// <summary>
+/// What importing the chosen file would change; the page shows it and answers with confirmImport.
+/// <see cref="PinsFit"/> is whether the file's kept-offline clips fit the cache limit it carries.
+/// </summary>
+internal sealed record ImportPreviewMessage(
+    string FileName,
+    string? AppVersion,
+    DateTime? ExportedUtc,
+    int FormatVersion,
+    bool NewerFormat,
+    ImportCountDto Rotation,
+    ImportCountDto Pins,
+    IReadOnlyList<string> Changes,
+    bool HasMachine,
+    IReadOnlyList<string> MachineChanges,
+    bool PinsFit,
+    double PinsRequiredGb,
+    double BudgetGb) : HostMessage("importPreview");
+
 // ---- notices --------------------------------------------------------------------------------
 
 /// <summary>Something the page should tell the user: "info", "warning" or "error".</summary>

@@ -13,6 +13,10 @@ internal static partial class NativeMethods
 
     private const uint ES_CONTINUOUS = 0x80000000;
 
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool AttachConsole(uint processId);
+
     [LibraryImport("user32.dll", SetLastError = true)]
     private static partial IntPtr SetParent(IntPtr child, IntPtr newParent);
 
