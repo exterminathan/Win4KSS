@@ -24,6 +24,12 @@ public sealed class BrowserBridgeOptions
     /// <summary>Re-harvests catalogues. Default: a <see cref="CatalogRefresher"/> over every auto source.</summary>
     public Func<IProgress<CatalogRefreshProgress>, CancellationToken, Task<CatalogRefreshReport>>? RefreshCatalogs { get; init; }
 
+    /// <summary>
+    /// Whether the catalogues are stale enough to refresh on open (every 7 days). Default:
+    /// <see cref="CatalogRefresher.IsDue"/>. Only the browser refreshes; the saver never does.
+    /// </summary>
+    public Func<bool>? RefreshDue { get; init; }
+
     public TimeProvider? Time { get; init; }
 
     /// <summary>Settings edits are written this long after the last one.</summary>
@@ -153,7 +159,17 @@ public sealed class BrowserBridge : IDisposable
     /// changed anything), syncs pins, starts previews, and — if the page is ready — sends the
     /// catalogue. Call once after construction; the page can send <c>ready</c> before or after.
     /// </summary>
-    public Task InitializeAsync() => LoadCatalogAsync(initial: true);
+    public async Task InitializeAsync()
+    {
+        await LoadCatalogAsync(initial: true);
+
+        var due = _options.RefreshDue ?? (() => new CatalogRefresher().IsDue());
+        if (due())
+        {
+            Log.Info("Browser: catalogues are over 7 days old; refreshing in the background");
+            Background = RefreshCatalogsAsync();
+        }
+    }
 
     /// <summary>The page is navigating away (reload, crash). Nothing is posted until its next <c>ready</c>.</summary>
     public void PageUnloaded() => _pageReady = false;

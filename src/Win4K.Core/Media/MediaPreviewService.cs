@@ -28,13 +28,13 @@ public sealed class MediaPreviewOptions
     public TimeSpan HeadDownloadTimeout { get; init; } = TimeSpan.FromSeconds(120);
 
     /// <summary>
-    /// Read uncached clips through a Range-fetched head segment (true, the default) or hand
-    /// ffmpeg the HTTPS URL directly. Measured on archive.org (~1.3 MB/s): the head route took
+    /// Read uncached clips through a Range-fetched head segment (true) or hand ffmpeg the
+    /// HTTPS URL directly (false, the default). Measured on archive.org (~1.3 MB/s): the head route took
     /// 22 s and 27 MB for one hover clip; ffmpeg's own input seek took 7.6 s and fetched only
     /// what it decoded. Both verify TLS against our trust (HttpClient/AppleTrust vs. the CA bundle
     /// with tls_verify=1). Tail-indexed files always go direct.
     /// </summary>
-    public bool UseHeadSegments { get; init; } = true;
+    public bool UseHeadSegments { get; init; }
 
     /// <summary>Head segment fetched when the clip's bitrate is unknown.</summary>
     public long DefaultHeadBytes { get; init; } = 20L * 1024 * 1024;

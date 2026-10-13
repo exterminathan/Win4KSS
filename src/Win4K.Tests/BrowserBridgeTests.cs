@@ -122,7 +122,8 @@ public class BrowserBridgeTests : IDisposable
         AppSettings? settings = null,
         Func<IReadOnlyList<ClipInfo>>? catalogue = null,
         Func<IProgress<CatalogRefreshProgress>, CancellationToken, Task<CatalogRefreshReport>>? refresh = null,
-        Action<AppSettings>? save = null)
+        Action<AppSettings>? save = null,
+        Func<bool>? refreshDue = null)
     {
         settings ??= NewSettings();
         var cache = Track(new VideoCache(settings, watchForChanges: false));
@@ -145,6 +146,7 @@ public class BrowserBridgeTests : IDisposable
             Save = save ?? (_ => Interlocked.Increment(ref _saves)),
             LoadCatalog = (_, _) => Task.FromResult(catalogue?.Invoke() ?? Catalogue),
             RefreshCatalogs = refresh,
+            RefreshDue = refreshDue ?? (() => false),
             // Long enough never to fire inside a test: flushes are explicit.
             SaveDebounce = TimeSpan.FromHours(1),
             DeltaInterval = TimeSpan.FromHours(1),
@@ -716,6 +718,26 @@ public class BrowserBridgeTests : IDisposable
         Assert.Equal(5, Messages("catalog").Single().GetProperty("clips").GetArrayLength());
         Assert.Contains("apple:NEW", built.Settings.RotationKeys); // Apple auto-adds
         Assert.True(ClipState(LastState(), "apple:NEW").GetProperty("inRotation").GetBoolean());
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Opening_refreshes_catalogues_in_the_background_only_when_due(bool due)
+    {
+        var calls = 0;
+        var built = Create(
+            refresh: (_, _) =>
+            {
+                Interlocked.Increment(ref calls);
+                return Task.FromResult(new CatalogRefreshReport([]));
+            },
+            refreshDue: () => due);
+
+        await built.Bridge.InitializeAsync();
+        await built.Bridge.Background;
+
+        Assert.Equal(due ? 1 : 0, calls);
     }
 
     [Fact]
