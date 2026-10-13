@@ -8,7 +8,7 @@ Built for one user, on one machine, for personal use.
 
 ## Status
 
-**Built, installed (user scope), and working.** All eight phases complete; clip-browser Phase B (unified clip model + in-app catalogue refresh) Phase C (cache pins, download queue, multi-process safety) and Phase D (`MediaPreviewService`: grid stills + hover clips) landed 2026-10-13; 389 tests green. `/s`, `/c`, `/p`, `/w` and `/now` all verified against the published build; 4K HEVC streams and plays with `d3d11va` hardware decode, including the settings-dialog live preview.
+**Built, installed (user scope), and working.** All eight phases complete; clip-browser Phase B (unified clip model + in-app catalogue refresh) Phase C (cache pins, download queue, multi-process safety) and Phase D (`MediaPreviewService`: grid stills + hover clips) and Phase F (settings v2: per-clip rotation) landed 2026-10-13; 419 tests green. `/s`, `/c`, `/p`, `/w` and `/now` all verified against the published build; 4K HEVC streams and plays with `d3d11va` hardware decode, including the settings-dialog live preview.
 
 Installed at `%LOCALAPPDATA%\Programs\Win4KSS\` (renamed from `Win4KAerial` on 2026-10-12 so Screen Saver Settings shows "Win4KSS"; `install-scr.ps1` removes the old files and repoints `SCRNSAVE.EXE`) with Desktop + Start Menu shortcuts bound to `Ctrl+Alt+S`. The full walk-away chain was observed working end to end: shortcut → `StartNow` → Windows launched our saver → 1500 ms manual grace → playing from cache.
 
@@ -37,7 +37,7 @@ Win4KScreensavers/
 │   ├── Win4K.ScreenSaver/   WinForms exe → Win4KSS.scr / Win4KSS.exe
 │   │   ├── Program.cs       CLI verbs; SaverForm.cs; SettingsForm.cs
 │   │   └── InputDismissWatcher.cs, LaunchContext.cs, PreviewLifetime.cs, ShortcutManager.cs, NativeMethods.cs
-│   └── Win4K.Tests/         xunit (389); Fixtures/ = trimmed upstream samples for the harvesters
+│   └── Win4K.Tests/         xunit (419); Fixtures/ = trimmed upstream samples for the harvesters
 ├── assets/                  fallback-entries.json, apple-root-ca.cer, registry/
 ├── native/mpv/              libmpv-2.dll — gitignored, fetched by script
 ├── scripts/                 fetch-libmpv.ps1, install-scr.ps1
@@ -60,6 +60,7 @@ Runtime state lives in `%LOCALAPPDATA%\Win4KScreensavers\`: `settings.json`, `ma
 - **Debugging playback:** `$env:WIN4K_MPV_LOG="1"` raises `mpv.log` from warnings to full debug
 - Both projects need `<AllowUnsafeBlocks>` — `[LibraryImport]` source-generated marshalling requires it
 - **Settings live in JSON**, not the registry: `%LOCALAPPDATA%\Win4KScreensavers\settings.json`. Cache and manifest live alongside it.
+- **Settings v2 (version 2): the rotation is per clip.** `RotationKeys` (what the saver plays), `AutoAddSources` (`apple`/`aerial-manifests`/`archive-org`/`nasa`/`local` — new clips from these join the rotation), `KnownKeys` (auto-add detection only; the saver fills it every run, so the browser's New tag comes from `AddedUtc` via `TagBuilder.IsNew`, never from it). `SourceMode`/`SelectedClipIds`/`EnabledCatalogIds` are v1-only: read, migrated, nulled, never written. The v1→v2 migration needs the catalogue, so it is not in `AppSettings.Load`: call `SettingsMigrator.Prepare`/`PrepareAndSave(settings, ClipLibrary.LoadAsync(...))` after loading it (idempotent; also merges new keys). The first v2 save over a v1 file copies it to `settings.v1.json`, once. Edit rotation via `Rotation.SetInRotation`/`SetAutoAdd`, then `settings.Save()`. Saver plays `Rotation.Select`: rotation → else cached clips → else Apple → else everything.
 - Prefer `HttpClient` + `CancellationToken`; no `async void`, no `WebClient`.
 
 ## Key facts worth not re-deriving
@@ -97,7 +98,7 @@ Harvested 2026-08-12 (harvest.py): `archive-org` 1060, `aerial-manifests` 289, `
 
 - **Clip keys** (`ClipKey`, = `Clip.Id` = `ClipInfo.Key`): `apple:<GUID>` (resources-16 *and* tvOS 26 — that shared key is how they merge), `ia:<item>/<file>`, `nasa:<nasa_id>`, `amazon:<id>`, `jetson:<id>`, `robin:<id>`, `local:<path>`. Never a URL. Pre-key ids in `settings.json` are rewritten on load (`AppSettings.MigrateClipKeys`).
 - **The cache is still keyed by URL**, so URL escaping is load-bearing: archive.org URLs are escaped exactly as harvest.py's `urllib.parse.quote` did (verified byte-for-byte). NASA URLs moved from `http://` to escaped `https://` in the 2026-10-13 catalogue.
-- `ClipLibrary.LoadAsync` is the browser's view: every source, merged (`ClipMerger`) — 114 Apple + 25 tvOS-only + the rest. `ClipResolver` (the saver's playlist) still honours `SourceMode`/`EnabledCatalogIds` and dedupes by key, first source wins.
+- `ClipLibrary.LoadAsync` is the browser's view: every source, merged (`ClipMerger`) — 114 Apple + 25 tvOS-only + the rest. `ClipResolver` no longer filters by source: it resolves every source; `ClipResolver.PlayableClip` is the one quality rule (Apple = user quality, harvested = 4K SDR) shared with `PinManager.ClipFor`.
 
 - **Apple's manifest has a newer generation than `resources-16.tar`:** the tvOS 26 manifest carries **139 assets** (vs 114), a 4-category/59-subcategory tree, and a companion 687-entry strings file that resolves `localizedNameKey` and `pointsOfInterest` to caption text — no binary plist parsing needed. Mirrored via the `aerial-manifests` source.
 - **Three other vendors publish Apple's exact schema** — Amazon Fire TV ambient (112 assets, and it has a real `timeOfDay` field Apple dropped), Jetson Creative (20), Robin Fourcade (18). Same parser, no new code path.

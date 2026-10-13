@@ -1,12 +1,11 @@
 namespace Win4K.Core.Catalogs;
 
 /// <summary>
-/// The full clip catalogue, for the clip browser: every source, enabled or not, merged into
-/// one <see cref="ClipInfo"/> per key (<see cref="ClipMerger"/>). Unlike
-/// <see cref="ClipResolver"/>, which builds the saver's playlist from the sources the user has
-/// switched on, this ignores <see cref="AppSettings.SourceMode"/> and
-/// <see cref="AppSettings.EnabledCatalogIds"/>: the browser shows everything and lets the
-/// user choose per clip.
+/// The full clip catalogue: every source merged into one <see cref="ClipInfo"/> per key
+/// (<see cref="ClipMerger"/>). The browser shows all of it and lets the user choose per clip;
+/// the saver narrows it to <see cref="AppSettings.RotationKeys"/> (<see cref="Rotation.Select"/>).
+/// After loading, call <see cref="SettingsMigrator.Prepare"/> so v1 settings are migrated and
+/// new clips from auto-add sources join the rotation.
 ///
 /// Reads only local data plus Apple's manifest (disk cache → network → embedded), so it is
 /// cheap enough to call on every browser open. Never refreshes catalogues; that is

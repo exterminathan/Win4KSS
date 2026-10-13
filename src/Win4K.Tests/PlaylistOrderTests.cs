@@ -100,45 +100,16 @@ public class PlaylistOrderTests
     }
 
     [Fact]
-    public void Selection_filters_to_the_chosen_clips()
+    public void Order_plays_every_clip_it_is_given()
     {
+        // Settings v2: choosing clips is Rotation.Select's job (see RotationTests); the order
+        // never drops any, and there is no selection list left to filter by.
         var clips = Enumerable.Range(0, 10).Select(i => Make(i.ToString())).ToList();
-        var settings = new AppSettings
-        {
-            Shuffle = false,
-            UseTimeOfDay = false,
-            SelectedClipIds = ["2", "5", "7"],
-        };
+        var settings = new AppSettings { Shuffle = false, UseTimeOfDay = false };
 
         var order = PlaylistEngine.BuildOrder(clips, settings, Midday);
 
-        Assert.Equal(["2", "5", "7"], order.Select(c => c.Id));
-    }
-
-    [Fact]
-    public void Empty_selection_means_everything_not_nothing()
-    {
-        // First-run state. Treating "no selection" as "play nothing" would show a black screen.
-        var clips = Enumerable.Range(0, 5).Select(i => Make(i.ToString())).ToList();
-        var settings = new AppSettings { Shuffle = false, UseTimeOfDay = false, SelectedClipIds = [] };
-
-        Assert.Equal(5, PlaylistEngine.BuildOrder(clips, settings, Midday).Count);
-    }
-
-    [Fact]
-    public void Stale_selection_falls_back_to_everything()
-    {
-        // Ids saved against an older manifest that no longer match anything must not leave
-        // the user staring at a black screen.
-        var clips = Enumerable.Range(0, 5).Select(i => Make(i.ToString())).ToList();
-        var settings = new AppSettings
-        {
-            Shuffle = false,
-            UseTimeOfDay = false,
-            SelectedClipIds = ["does-not-exist", "nor-this"],
-        };
-
-        Assert.Equal(5, PlaylistEngine.BuildOrder(clips, settings, Midday).Count);
+        Assert.Equal(clips.Select(c => c.Id), order.Select(c => c.Id));
     }
 
     [Theory]

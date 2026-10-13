@@ -649,20 +649,9 @@ public sealed class PlaylistEngine : IDisposable
         if (clips.Count == 0)
             return [];
 
-        // Filter to the user's selection. An empty selection means "everything", which is
-        // also the first-run state — never interpret it as "nothing".
-        IEnumerable<Clip> filtered = clips;
-        if (settings.SelectedClipIds.Count > 0)
-        {
-            var selected = settings.SelectedClipIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var subset = clips.Where(c => selected.Contains(c.Id)).ToList();
-
-            // If the selection matches nothing (stale ids after a manifest change), fall back
-            // to the full set rather than showing a black screen.
-            filtered = subset.Count > 0 ? subset : clips;
-        }
-
-        var ordered = filtered.ToList();
+        // No selection filter here: the caller passes the rotation already chosen
+        // (Rotation.Select), fallbacks included.
+        var ordered = clips.ToList();
 
         if (settings.Shuffle)
         {

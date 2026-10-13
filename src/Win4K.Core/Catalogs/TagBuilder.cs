@@ -38,7 +38,11 @@ public enum ClipState
     KeptOffline = 2,
     Cached = 4,
     Downloading = 8,
-    /// <summary>Force the New tag regardless of <see cref="ClipInfo.AddedUtc"/> (e.g. not in KnownKeys).</summary>
+    /// <summary>
+    /// Force the New tag regardless of <see cref="ClipInfo.AddedUtc"/>. Not for "not in
+    /// KnownKeys": the saver adds every key to <see cref="AppSettings.KnownKeys"/> on each run,
+    /// so New comes from AddedUtc (<see cref="TagBuilder.IsNew"/>) and KnownKeys only drives auto-add.
+    /// </summary>
     New = 16,
     Unhealthy = 32,
 }

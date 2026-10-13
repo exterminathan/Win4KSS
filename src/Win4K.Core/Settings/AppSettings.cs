@@ -13,6 +13,7 @@ public enum MultiMonitorMode
     SpanAll = 10,
 }
 
+/// <summary>Settings v1 only: which of Apple / local folders played. Retired by v2; see <see cref="SettingsMigrator"/>.</summary>
 public enum SourceMode
 {
     Apple = 0,
@@ -29,10 +30,18 @@ public enum SourceMode
 /// </summary>
 public sealed class AppSettings
 {
-    /// <summary>Bumped when a migration is needed. Unknown future versions are loaded as-is.</summary>
-    public int Version { get; set; } = 1;
+    /// <summary>The schema version this build writes. v1 → v2 is <see cref="SettingsMigrator.MigrateToV2"/>.</summary>
+    public const int CurrentVersion = 2;
 
-    public SourceMode SourceMode { get; set; } = SourceMode.Apple;
+    /// <summary>The file the v1 settings are copied to, once, before the first v2 save overwrites them.</summary>
+    public const string V1BackupFileName = "settings.v1.json";
+
+    /// <summary>
+    /// Bumped when a migration is needed. Unknown future versions are loaded as-is. A fresh
+    /// settings object is already current; a file with no "version" field loads as v1.
+    /// </summary>
+    public int Version { get; set; } = CurrentVersion;
+
     public VideoQuality Quality { get; set; } = VideoQuality.Auto;
     public MultiMonitorMode MultiMonitorMode { get; set; } = MultiMonitorMode.MainOnly;
 
@@ -48,17 +57,27 @@ public sealed class AppSettings
     public string? CacheDirectory { get; set; }
     public double CacheBudgetGb { get; set; } = 20.0;
 
-    /// <summary>Clip keys to play (<see cref="Clip.Id"/>). Empty means "all", which is also the first-run state.</summary>
-    public List<string> SelectedClipIds { get; set; } = [];
-
+    /// <summary>
+    /// Folders whose video files are clips ("local:&lt;path&gt;" keys), rescanned on every run.
+    /// Their source id is <see cref="Rotation.LocalSourceId"/>, auto-add by default, so a file
+    /// dropped into a folder joins the rotation on the next run.
+    /// </summary>
     public List<string> LocalFolders { get; set; } = [];
 
-    /// <summary>
-    /// Ids of the harvested catalogues in assets/registry to mix in (archive-org, nasa,
-    /// aerial-manifests). Off by default: Apple's aerials are the point of the app, and the
-    /// harvested sources are opt-in breadth rather than a surprise.
-    /// </summary>
-    public List<string> EnabledCatalogIds { get; set; } = [];
+    // ---- Retired v1 fields. Read from v1 files by SettingsMigrator, nulled by the migration,
+    // and never written again (null is skipped on write). Do not build on them.
+
+    /// <summary>v1 only: which of Apple / local folders played. Null in v2.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public SourceMode? SourceMode { get; set; }
+
+    /// <summary>v1 only: clip keys to play, empty meaning "all". Null in v2; see <see cref="RotationKeys"/>.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? SelectedClipIds { get; set; }
+
+    /// <summary>v1 only: registry catalogues mixed in (archive-org, nasa, aerial-manifests). Null in v2.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? EnabledCatalogIds { get; set; }
 
     /// <summary>Overrides the tarball probe. Normally null; exposed for debugging a bad manifest.</summary>
     public string? ManifestUrlOverride { get; set; }
@@ -86,16 +105,30 @@ public sealed class AppSettings
     /// </summary>
     public string? FfmpegPath { get; set; }
 
-    // ---- Settings v2 (Phase F). Fields land first as a contract for the browser; the v1 → v2
-    // migration that fills them, and the saver's use of them, follow in Phase F.
+    // ---- Settings v2: the rotation is per clip. Edit these through Rotation (SetInRotation,
+    // SetAutoAdd, MergeNewKeys) rather than directly; it keeps the rules in one place.
 
-    /// <summary>Clip keys (<see cref="Clip.Id"/>) the saver plays. Per-clip, across all sources.</summary>
+    /// <summary>
+    /// Clip keys (<see cref="Clip.Id"/>) the saver plays, per clip, across all sources. Keys
+    /// the catalogue no longer lists are ignored, not removed. When none match, the saver
+    /// falls back to cached clips, then Apple (<see cref="Rotation.Select"/>).
+    /// </summary>
     public HashSet<string> RotationKeys { get; set; } = new(StringComparer.Ordinal);
 
-    /// <summary>Source ids whose newly harvested clips join <see cref="RotationKeys"/> automatically.</summary>
-    public HashSet<string> AutoAddSources { get; set; } = new(StringComparer.Ordinal);
+    /// <summary>
+    /// Source ids (<see cref="Rotation.SourcesOf"/>: "apple", "aerial-manifests", "archive-org",
+    /// "nasa", "local") whose new clips join <see cref="RotationKeys"/> automatically. A fresh
+    /// install auto-adds Apple and local folders, which is what makes its first run play Apple.
+    /// </summary>
+    public HashSet<string> AutoAddSources { get; set; } =
+        new(StringComparer.Ordinal) { AppleAerialSource.SourceId, Rotation.LocalSourceId };
 
-    /// <summary>Every clip key seen so far; a catalogue key missing from here is new.</summary>
+    /// <summary>
+    /// Every clip key seen so far, for auto-add detection only (<see cref="Rotation.MergeNewKeys"/>):
+    /// a catalogue key missing from here is new, and joins the rotation if its source auto-adds.
+    /// The saver fills it on every run, so it is NOT the browser's "New" tag; that comes from
+    /// <see cref="ClipInfo.AddedUtc"/> (<see cref="Catalogs.TagBuilder.IsNew"/>).
+    /// </summary>
     public HashSet<string> KnownKeys { get; set; } = new(StringComparer.Ordinal);
 
     [JsonIgnore]
@@ -130,7 +163,7 @@ public sealed class AppSettings
             return key;
         }
 
-        if (SelectedClipIds.Count > 0)
+        if (SelectedClipIds is { Count: > 0 })
             SelectedClipIds = SelectedClipIds.Select(Map).Distinct(StringComparer.Ordinal).ToList();
 
         if (FailedClips.Count > 0)
@@ -169,9 +202,19 @@ public sealed class AppSettings
             if (!File.Exists(path))
                 return new AppSettings();
 
-            var settings = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(path), Options)
-                           ?? new AppSettings();
+            var json = File.ReadAllText(path);
+            var settings = JsonSerializer.Deserialize<AppSettings>(json, Options) ?? new AppSettings();
+
+            // A fresh object is current, so a file that never said which version it is would
+            // skip the v1 -> v2 migration. Every file written so far does say; this is for a
+            // hand-written one.
+            if (ReadVersion(json) is null)
+                settings.Version = 1;
+
             settings.KeptOffline ??= new HashSet<string>(StringComparer.Ordinal);
+            settings.RotationKeys ??= new HashSet<string>(StringComparer.Ordinal);
+            settings.AutoAddSources ??= new HashSet<string>(StringComparer.Ordinal);
+            settings.KnownKeys ??= new HashSet<string>(StringComparer.Ordinal);
             settings.MigrateClipKeys();
             return settings;
         }
@@ -194,9 +237,61 @@ public sealed class AppSettings
         }
         var temp = path + ".tmp";
 
+        // The first v2 save over a v1 file keeps the v1 file, once, as settings.v1.json.
+        if (Version >= 2)
+            BackUpV1(path);
+
         // Temp-then-move: a crash mid-write leaves the previous good file intact.
         File.WriteAllText(temp, JsonSerializer.Serialize(this, Options));
         File.Move(temp, path, overwrite: true);
         Log.Info($"Settings: saved to {path}");
+    }
+
+    /// <summary>The "version" field of a settings file's JSON, or null if it has none (or is not JSON).</summary>
+    private static int? ReadVersion(string json)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+                return null;
+            foreach (var property in document.RootElement.EnumerateObject())
+            {
+                if (property.Name.Equals(nameof(Version), StringComparison.OrdinalIgnoreCase) &&
+                    property.Value.TryGetInt32(out var version))
+                {
+                    return version;
+                }
+            }
+        }
+        catch (JsonException)
+        {
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Copies a v1 settings file to settings.v1.json beside it, unless that backup already
+    /// exists: the first backup is the one worth keeping. Never throws; a failed backup is
+    /// logged and must not stop the save.
+    /// </summary>
+    private static void BackUpV1(string path)
+    {
+        try
+        {
+            var backup = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(path))!, V1BackupFileName);
+            if (!File.Exists(path) || File.Exists(backup))
+                return;
+
+            if (ReadVersion(File.ReadAllText(path)) is >= 2)
+                return;
+
+            File.Copy(path, backup, overwrite: false);
+            Log.Info($"Settings: backed up v1 settings to {backup}");
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Settings: could not back up v1 settings: {ex.Message}");
+        }
     }
 }

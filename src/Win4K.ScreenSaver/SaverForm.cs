@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using Win4K.Core;
 using Win4K.Core.Caching;
+using Win4K.Core.Catalogs;
 using Win4K.Core.Playback;
 
 namespace Win4K.ScreenSaver;
@@ -204,8 +205,27 @@ public sealed class SaverForm : Form
             try
             {
                 var settings = AppSettings.Load();
-                var resolved = await ClipResolver.ResolveAsync(settings);
-                _playlist.Start(resolved, settings);
+
+                // Every source is resolved (local JSON plus Apple's cached manifest); the
+                // rotation picks clips from it. Migrating v1 settings and merging in new
+                // clips from auto-add sources needs the catalogue, so it happens here. Only
+                // the primary window saves, so several video windows do not race to write.
+                var catalogue = await ClipLibrary.LoadAsync(settings);
+                if (_shouldCache)
+                    settings = SettingsMigrator.PrepareAndSave(settings, catalogue);
+                else
+                    SettingsMigrator.Prepare(settings, catalogue);
+
+                var cache = _cache;
+                var selection = Rotation.Select(settings, catalogue,
+                    cache is null ? null : clip => cache.IsCached(clip.Url));
+
+                Log.Info(selection.Fallback == RotationFallback.None
+                    ? $"Rotation: {selection.Clips.Count} of {catalogue.Count} clips"
+                    : $"Rotation: empty, falling back to {selection.Fallback.ToString().ToLowerInvariant()} " +
+                      $"({selection.Clips.Count} clips)");
+
+                _playlist.Start(selection.Clips, settings);
             }
             catch (Exception ex)
             {

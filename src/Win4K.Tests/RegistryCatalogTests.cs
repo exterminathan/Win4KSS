@@ -68,30 +68,13 @@ public class RegistryCatalogTests
     }
 
     [Fact]
-    public void Catalogues_are_off_unless_explicitly_enabled()
+    public void Every_catalogue_is_a_source_whatever_the_settings()
     {
-        var settings = new AppSettings();
-        var sources = ClipResolver.BuildSources(settings).ToList();
+        // Settings v2: sources are never switched off; the rotation is per clip.
+        var sources = ClipResolver.BuildSources(new AppSettings()).ToList();
 
-        Assert.DoesNotContain(sources, s => s.Id.StartsWith(RegistryCatalogSource.SourceIdPrefix));
-    }
-
-    [Fact]
-    public void Enabling_a_catalogue_adds_it_to_the_source_list()
-    {
-        var settings = new AppSettings { EnabledCatalogIds = ["nasa"] };
-        var sources = ClipResolver.BuildSources(settings).ToList();
-
-        Assert.Contains(sources, s => s.Id == RegistryCatalogSource.SourceIdPrefix + "nasa");
-    }
-
-    [Fact]
-    public void Unknown_catalogue_ids_are_ignored_rather_than_throwing()
-    {
-        var settings = new AppSettings { EnabledCatalogIds = ["not-a-real-catalogue"] };
-
-        var sources = ClipResolver.BuildSources(settings).ToList();
-
-        Assert.DoesNotContain(sources, s => s.Id.Contains("not-a-real-catalogue"));
+        Assert.Contains(sources, s => s.Id == AppleAerialSource.SourceId);
+        foreach (var id in SourceRegistry.KnownCatalogs)
+            Assert.Contains(sources, s => s.Id == RegistryCatalogSource.SourceIdPrefix + id);
     }
 }

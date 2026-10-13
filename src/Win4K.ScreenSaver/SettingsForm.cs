@@ -1,5 +1,6 @@
 using Win4K.Core;
 using Win4K.Core.Caching;
+using Win4K.Core.Catalogs;
 using Win4K.Core.Playback;
 
 namespace Win4K.ScreenSaver;
@@ -15,6 +16,9 @@ public sealed class SettingsForm : Form
     private DownloadQueue? _queue;
     private PinManager? _pins;
     private IReadOnlyList<Clip> _clips = [];
+    private IReadOnlyList<ClipInfo> _library = [];
+    private Dictionary<string, ClipInfo> _infoByKey = new(StringComparer.Ordinal);
+    private bool _prepared;
     private CancellationTokenSource _work = new();
 
     // Sources
@@ -456,7 +460,6 @@ public sealed class SettingsForm : Form
     private void LoadSettings()
     {
         _sourceMode.Items.AddRange(["Apple aerials", "Local folders", "Apple aerials and local folders"]);
-        _sourceMode.SelectedIndex = (int)_settings.SourceMode;
 
         _quality.Items.AddRange([
             "Automatic (match this display)",
@@ -493,10 +496,8 @@ public sealed class SettingsForm : Form
             _folders.Items.Add(folder);
 
         foreach (var source in SourceRegistry.Available())
-        {
-            var index = _catalogs.Items.Add($"{source.DisplayName}  ({source.ClipCount:N0} clips)");
-            _catalogs.SetItemChecked(index, _settings.EnabledCatalogIds.Contains(source.Id, StringComparer.OrdinalIgnoreCase));
-        }
+            _catalogs.Items.Add($"{source.DisplayName}  ({source.ClipCount:N0} clips)");
+        SyncSourceChecks();
 
         _desktopShortcut.Checked = ShortcutManager.DesktopShortcutExists;
         _startMenuShortcut.Checked = ShortcutManager.StartMenuShortcutExists;
@@ -533,7 +534,6 @@ public sealed class SettingsForm : Form
 
     private void SaveSettings()
     {
-        _settings.SourceMode = (SourceMode)_sourceMode.SelectedIndex;
         _settings.Quality = (VideoQuality)_quality.SelectedIndex;
         _settings.MultiMonitorMode = _multiMonitor.SelectedIndex switch
         {
@@ -551,12 +551,7 @@ public sealed class SettingsForm : Form
 
         _settings.LocalFolders = _folders.Items.Cast<string>().ToList();
 
-        var available = SourceRegistry.Available();
-        _settings.EnabledCatalogIds = available.Where((_, i) => _catalogs.GetItemChecked(i))
-                                               .Select(s => s.Id)
-                                               .ToList();
-
-        _settings.SelectedClipIds = CollectCheckedClipIds();
+        SaveRotation();
 
         try
         {
@@ -602,19 +597,30 @@ public sealed class SettingsForm : Form
 
         try
         {
-            // Read the pending source choices, not the saved ones, so Refresh reflects what
-            // is on screen rather than what was last written to disk.
+            // Read the pending folders and quality, not the saved ones, so Refresh reflects
+            // what is on screen rather than what was last written to disk.
             var probe = new AppSettings
             {
-                SourceMode = (SourceMode)Math.Max(0, _sourceMode.SelectedIndex),
                 Quality = (VideoQuality)Math.Max(0, _quality.SelectedIndex),
                 LocalFolders = _folders.Items.Cast<string>().ToList(),
-                EnabledCatalogIds = SourceRegistry.Available()
-                                                  .Where((_, i) => _catalogs.GetItemChecked(i))
-                                                  .Select(s => s.Id).ToList(),
+                ManifestUrlOverride = _settings.ManifestUrlOverride,
             };
 
-            _clips = await ClipResolver.ResolveAsync(probe, _work.Token);
+            _library = await ClipLibrary.LoadAsync(probe, _work.Token);
+            _infoByKey = _library.GroupBy(c => c.Key).ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+
+            // Settings v2 needs the catalogue: migrate v1 and merge in new clips once, on the
+            // first load. Saved with everything else on OK.
+            if (!_prepared && _library.Count > 0)
+            {
+                _prepared = true;
+                if (SettingsMigrator.Prepare(_settings, _library))
+                    SyncSourceChecks();
+            }
+
+            // The tree lists the clips of the sources ticked on the Sources tab.
+            var sources = CheckedSources();
+            _clips = ClipResolver.ToClips(_library.Where(c => Rotation.SourcesOf(c).Overlaps(sources)), probe.Quality);
             BuildTree();
             _status.Text = "";
         }
@@ -638,16 +644,13 @@ public sealed class SettingsForm : Form
         _clipTree.BeginUpdate();
         _clipTree.Nodes.Clear();
 
-        var selected = _settings.SelectedClipIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var selectAll = selected.Count == 0; // empty means everything
-
         foreach (var group in _clips.GroupBy(c => c.Category).OrderBy(g => g.Key))
         {
             var parent = new TreeNode(group.Key);
 
             foreach (var clip in group.OrderBy(c => c.Title, StringComparer.OrdinalIgnoreCase))
             {
-                var node = new TreeNode(clip.Title) { Tag = clip.Id, Checked = selectAll || selected.Contains(clip.Id) };
+                var node = new TreeNode(clip.Title) { Tag = clip.Id, Checked = DefaultChecked(clip.Id) };
                 parent.Nodes.Add(node);
             }
 
@@ -716,21 +719,92 @@ public sealed class SettingsForm : Form
     private List<string> CollectCheckedClipIds()
     {
         var ids = new List<string>();
-        var total = 0;
 
         foreach (TreeNode parent in _clipTree.Nodes)
         {
             foreach (TreeNode child in parent.Nodes)
             {
-                total++;
                 if (child.Checked && child.Tag is string id)
                     ids.Add(id);
             }
         }
 
-        // Everything selected is stored as "no selection", so a later manifest update that
-        // adds clips picks them up instead of silently excluding them.
-        return ids.Count == total ? [] : ids;
+        return ids;
+    }
+
+    // ---- settings v2 mapping (this dialog predates the per-clip rotation; the clip browser
+    // replaces it). Ticked sources = AutoAddSources; ticked clips = RotationKeys.
+
+    /// <summary>Ticks the source controls from <see cref="AppSettings.AutoAddSources"/>.</summary>
+    private void SyncSourceChecks()
+    {
+        var apple = _settings.AutoAddSources.Contains(AppleAerialSource.SourceId);
+        var local = _settings.AutoAddSources.Contains(Rotation.LocalSourceId);
+        _sourceMode.SelectedIndex = apple && local ? 2 : local ? 1 : 0;
+
+        var available = SourceRegistry.Available();
+        for (var i = 0; i < _catalogs.Items.Count && i < available.Count; i++)
+            _catalogs.SetItemChecked(i, _settings.AutoAddSources.Contains(available[i].Id));
+    }
+
+    /// <summary>The sources ticked on the Sources tab, as rotation source ids.</summary>
+    private HashSet<string> CheckedSources()
+    {
+        var sources = new HashSet<string>(StringComparer.Ordinal);
+        if (_sourceMode.SelectedIndex is 0 or 2 or -1)
+            sources.Add(AppleAerialSource.SourceId);
+        if (_sourceMode.SelectedIndex is 1 or 2)
+            sources.Add(Rotation.LocalSourceId);
+
+        var available = SourceRegistry.Available();
+        for (var i = 0; i < _catalogs.Items.Count && i < available.Count; i++)
+        {
+            if (_catalogs.GetItemChecked(i))
+                sources.Add(available[i].Id);
+        }
+        return sources;
+    }
+
+    /// <summary>In the rotation, or from a source just ticked here (whose clips all join).</summary>
+    private bool DefaultChecked(string key) =>
+        _settings.RotationKeys.Contains(key) ||
+        (_infoByKey.TryGetValue(key, out var info) && !Rotation.SourcesOf(info).Overlaps(_settings.AutoAddSources));
+
+    /// <summary>
+    /// Ticked sources become <see cref="AppSettings.AutoAddSources"/>. Clips of unticked sources
+    /// leave the rotation; clips in the tree follow their tick; clips of a newly ticked source
+    /// not yet in the tree (no Refresh since) all join.
+    /// </summary>
+    private void SaveRotation()
+    {
+        var sources = CheckedSources();
+        var before = new HashSet<string>(_settings.AutoAddSources, StringComparer.Ordinal);
+        foreach (var id in Rotation.SourceIds)
+            Rotation.SetAutoAdd(_settings, id, sources.Contains(id));
+
+        if (_library.Count == 0)
+            return; // the catalogue never loaded; leave the rotation alone
+
+        var shown = new Dictionary<string, bool>(StringComparer.Ordinal);
+        foreach (TreeNode parent in _clipTree.Nodes)
+        {
+            foreach (TreeNode child in parent.Nodes)
+            {
+                if (child.Tag is string id)
+                    shown[id] = child.Checked;
+            }
+        }
+
+        foreach (var info in _library)
+        {
+            var of = Rotation.SourcesOf(info);
+            if (!of.Overlaps(sources))
+                Rotation.SetInRotation(_settings, [info.Key], false);
+            else if (shown.TryGetValue(info.Key, out var ticked))
+                Rotation.SetInRotation(_settings, [info.Key], ticked);
+            else if (!of.Overlaps(before))
+                Rotation.SetInRotation(_settings, [info.Key], true);
+        }
     }
 
     private void UpdateClipSummary()
@@ -806,13 +880,14 @@ public sealed class SettingsForm : Form
         if (_pins is null || _clips.Count == 0)
             return;
 
-        var ticked = CollectCheckedClipIds();
-        var keys = (ticked.Count == 0 ? _clips.Select(c => c.Id) : ticked).ToList();
+        var keys = CollectCheckedClipIds();
+        if (keys.Count == 0)
+            return;
 
         _status.Text = "Reading the catalogue…";
         try
         {
-            _pins.SetCatalog(await Win4K.Core.Catalogs.ClipLibrary.LoadAsync(_settings, _work.Token));
+            _pins.SetCatalog(await ClipLibrary.LoadAsync(_settings, _work.Token));
         }
         catch (Exception ex)
         {

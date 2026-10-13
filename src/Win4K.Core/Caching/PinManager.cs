@@ -80,18 +80,12 @@ public sealed class PinManager
 
     /// <summary>
     /// The rendition a clip is pinned at: the user's quality for Apple's clips, 4K SDR for the
-    /// harvested catalogues — the same choice the saver makes when it plays them, so the
-    /// pinned file is the one it looks for. Null for local clips (nothing to download).
+    /// harvested catalogues — <see cref="ClipResolver.PlayableClip"/>, the same choice the saver
+    /// makes when it plays them, so the pinned file is the one it looks for. Null for local
+    /// clips (nothing to download).
     /// </summary>
-    public static Clip? ClipFor(ClipInfo info, VideoQuality quality)
-    {
-        if (info.IsLocal)
-            return null;
-
-        var apple = string.Equals(info.CatalogId, AppleAerialSource.SourceId, StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(info.SourceId, AppleAerialSource.SourceId, StringComparison.OrdinalIgnoreCase);
-        return info.ToClip(apple ? AppleAerialSource.Resolve(quality) : VideoQuality.Uhd4KSdr);
-    }
+    public static Clip? ClipFor(ClipInfo info, VideoQuality quality) =>
+        info.IsLocal ? null : ClipResolver.PlayableClip(info, quality);
 
     /// <summary>The clip to download for a pinned key at the current quality, or null if unknown or local.</summary>
     public Clip? TargetClip(string key) =>
