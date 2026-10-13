@@ -83,6 +83,15 @@ Name: "systemscr"; Description: "Make {#MyAppName} available in Windows' Screen 
 ; timeout as a side effect of installing software felt presumptuous. Flip the default, or the
 ; wording, if that is wrong for how this actually gets shared.
 Name: "setdefault"; Description: "Set {#MyAppName} as my active screen saver now (10 minute idle timeout)"; GroupDescription: "Screen saver registration:"; Flags: unchecked
+; Only offered on a genuinely fresh machine (Check: NotExistingInstall) -- when upgrading an
+; existing install, PrepareToInstall below already exports the current settings for safety,
+; and overwriting a working setup with an imported file mid-upgrade is not what "upgrade"
+; should mean. Checking this box prompts for a *.win4kss.json file via GetOpenFileName when
+; leaving this wizard page (NextButtonClick below); the actual import runs once files are on
+; disk, in CurStepChanged(ssPostInstall), before install-scr.ps1 touches shortcuts.
+; TODO(review): wording, and whether this belongs on the Tasks page at all vs. a dedicated
+; wizard page -- this is the "simpler" of the two options the spec offered.
+Name: "importsettings"; Description: "Import settings from a file..."; GroupDescription: "Settings:"; Flags: unchecked; Check: NotExistingInstall
 
 [Files]
 ; ignoreversion: these are single-file self-contained builds whose internal version doesn't
@@ -137,6 +146,17 @@ const
   // hand since Inno's preprocessor can't read a C# source file.
   WebView2DownloadUrl = 'https://go.microsoft.com/fwlink/p/?LinkId=2124703';
 
+var
+  // Set once in InitializeSetup and read everywhere else -- {app} is fixed (DisableDirPage=yes),
+  // so this is decided before the wizard shows any pages and never changes during the run.
+  ExistingInstallDetected: Boolean;
+  // Where PrepareToInstall writes the pre-upgrade safety-net export. Computed once in
+  // InitializeSetup so every reference (export call, log messages) agrees on the same path.
+  PreUpgradeExportPath: String;
+  // '' until the user picks a file for the "importsettings" task via GetOpenFileName
+  // (NextButtonClick). CurStepChanged(ssPostInstall) imports it if non-empty.
+  ImportSettingsFile: String;
+
 function IsWebView2RuntimeInstalled(): Boolean;
 var
   Version: String;
@@ -147,9 +167,63 @@ begin
     RegQueryStringValue(HKCU, 'SOFTWARE\Microsoft\EdgeUpdate\Clients\' + WebView2ClientGuid, 'pv', Version);
 end;
 
+// True when there is something here for the settings CLI to export, or for an import to
+// matter to: either a previous install's exe at the (locked) {app} path -- whether put there
+// by this installer or by running scripts/install-scr.ps1 by hand, which targets the very same
+// %LOCALAPPDATA%\Programs\Win4KSS path as its companion dir, see CLAUDE.md -- or a settings
+// profile under %LOCALAPPDATA%\Win4KScreensavers (AppPaths.SettingsFile), which several past
+// installs/uninstalls can leave behind even with no exe currently sitting at {app}.
+function NotExistingInstall(): Boolean;
+begin
+  Result := not ExistingInstallDetected;
+end;
+
+function DetectExistingInstall(): Boolean;
+begin
+  Result :=
+    FileExists(ExpandConstant('{app}\{#MyAppExeName}')) or
+    FileExists(ExpandConstant('{localappdata}\Win4KScreensavers\settings.json'));
+end;
+
+// Runs ExePath with Args via cmd.exe, capturing stderr to a temp file and returning it as
+// StdErrText. Exec() itself has no way to capture a child process's output, so this is the
+// standard Inno idiom: the outer "" .. "" around the whole /C argument lets cmd.exe strip one
+// layer of quoting so the quoted, space-containing exe path inside still parses correctly.
+// ExePath is a GUI-subsystem exe (SettingsCli.cs) -- that only matters for how *PowerShell*
+// would wait for it (Start-Process -Wait); cmd.exe's own synchronous child-process wait, which
+// Exec's ewWaitUntilTerminated relies on here, is unaffected by subsystem.
+function RunSettingsCli(const ExePath, Args: String; out ExitCode: Integer; out StdErrText: AnsiString): Boolean;
+var
+  StdErrFile, CmdLine: String;
+  ResultCode: Integer;
+begin
+  StdErrFile := ExpandConstant('{tmp}') + '\win4kss-cli-' + IntToStr(Random(1000000)) + '.err';
+  CmdLine := '/C ""' + ExePath + '" ' + Args + ' 2>"' + StdErrFile + '""';
+
+  Result := Exec(ExpandConstant('{cmd}'), CmdLine, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  ExitCode := ResultCode;
+
+  StdErrText := '';
+  if FileExists(StdErrFile) then
+  begin
+    LoadStringFromFile(StdErrFile, StdErrText);
+    DeleteFile(StdErrFile);
+  end;
+  StdErrText := Trim(StdErrText);
+end;
+
 function InitializeSetup(): Boolean;
 begin
   Result := True;
+
+  ExistingInstallDetected := DetectExistingInstall();
+  // TODO(review): the pre-upgrade export is written here, under the same profile directory
+  // settings.json/the cache already live in. %TEMP% was the other option the spec suggested;
+  // this one survives past the single Setup run (handy if the upgrade itself goes wrong), at
+  // the cost of sitting there permanently rather than being cleaned up automatically.
+  PreUpgradeExportPath := ExpandConstant('{localappdata}\Win4KScreensavers\pre-upgrade-settings.win4kss.json');
+  ImportSettingsFile := '';
+
   // Not a blocker: the screen saver itself needs no WebView2 at all, only the clip browser
   // (/c), and Win4KSS already detects this itself and offers the same download link at that
   // point. This just saves a confused "why won't /c open" moment later.
@@ -176,6 +250,99 @@ begin
   if WizardIsTaskSelected('setdefault') then
     Args := Args + ' -SetAsDefault -TimeoutMinutes 10';
   Result := Trim(Args);
+end;
+
+// Leaving the Tasks page with "importsettings" checked prompts for the file right away, so a
+// bad pick (or Cancel) is caught before Setup commits to anything -- Result := False keeps the
+// wizard on this page instead of advancing with the task checked but nothing chosen.
+function NextButtonClick(CurPageID: Integer): Boolean;
+begin
+  Result := True;
+  if CurPageID <> wpSelectTasks then
+    Exit;
+
+  if WizardIsTaskSelected('importsettings') then
+  begin
+    if ImportSettingsFile = '' then
+    begin
+      if not GetOpenFileName('Select a Win4KSS settings file to import', ImportSettingsFile, '',
+           'Win4KSS settings files (*.win4kss.json)|*.win4kss.json|All files (*.*)|*.*', '') then
+        Result := False; // user cancelled the dialog -- stay on the Tasks page
+    end;
+  end
+  else
+    ImportSettingsFile := ''; // unchecked again after picking a file -- forget the choice
+end;
+
+// Shared by the pre-upgrade export and the fresh-install import: runs the CLI call, and turns
+// its exit code into exactly the handling the spec asks for -- 0 silent, 1 a message box with
+// the captured stderr but the install carries on, 2 (or anything else unexpected) a louder but
+// still non-fatal warning. Never raises/aborts: settings export/import is a nice-to-have next
+// to a working install of the screen saver itself, never a reason to fail the whole thing.
+procedure RunSettingsCliAndWarn(const ExePath, Args, FailureContext: String);
+var
+  ExitCode: Integer;
+  StdErr: AnsiString;
+begin
+  if not RunSettingsCli(ExePath, Args, ExitCode, StdErr) then
+  begin
+    Log(FailureContext + ': could not launch ' + ExePath + '.');
+    Exit;
+  end;
+
+  case ExitCode of
+    0:
+      Log(FailureContext + ': succeeded.');
+    1:
+      begin
+        Log(FailureContext + ': ' + StdErr);
+        MsgBox(FailureContext + ':' + #13#10#13#10 + String(StdErr) + #13#10#13#10 +
+               'This does not affect the rest of the install.', mbInformation, MB_OK);
+      end;
+  else
+    begin
+      Log(FailureContext + ': unexpected exit code ' + IntToStr(ExitCode) + '. ' + StdErr);
+      MsgBox(FailureContext + ' failed unexpectedly (exit code ' + IntToStr(ExitCode) + '):' + #13#10#13#10 +
+             String(StdErr) + #13#10#13#10 + 'This does not affect the rest of the install.', mbInformation, MB_OK);
+    end;
+  end;
+end;
+
+// Runs before any files are copied (per spec: "before copying new files"). Exports the
+// about-to-be-upgraded install's current settings as a safety net -- not a hard requirement,
+// so a missing/unreadable exe or a failed export never blocks the upgrade; Result stays ''.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ExistingExe: String;
+begin
+  Result := '';
+  if not ExistingInstallDetected then
+    Exit;
+
+  ExistingExe := ExpandConstant('{app}\{#MyAppExeName}');
+  if not FileExists(ExistingExe) then
+  begin
+    Log('PrepareToInstall: settings profile exists but ' + ExistingExe + ' does not; skipping the pre-upgrade export.');
+    Exit;
+  end;
+
+  RunSettingsCliAndWarn(ExistingExe,
+    '--export-settings "' + PreUpgradeExportPath + '"',
+    'Exporting your current Win4KSS settings before upgrading (saved to ' + PreUpgradeExportPath + ')');
+end;
+
+// Fires after [Files]/[Icons]/etc. are done but before the [Run] section below executes --
+// i.e. before install-scr.ps1 touches shortcuts/registration and before the clip browser can
+// be launched, which is exactly the "after files copied, before any shortcut/first-launch
+// step" window the spec asks for. --include-machine is deliberately never passed: machine-
+// specific paths (cache folder, local folders, ffmpeg path) from someone else's export are not
+// something a fresh install should silently adopt (see SettingsCli.cs's own doc comment).
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if (CurStep = ssPostInstall) and (ImportSettingsFile <> '') then
+    RunSettingsCliAndWarn(ExpandConstant('{app}\{#MyAppExeName}'),
+      '--import-settings "' + ImportSettingsFile + '"',
+      'Importing settings from ' + ImportSettingsFile);
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
