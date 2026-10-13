@@ -14,7 +14,7 @@ namespace Win4K.Tests;
 
 /// <summary>
 /// The browser bridge against real services (cache, queue, pins, previews) in a temp root, with
-/// a fake host and a recorded post callback: every page → host message, every host → page
+/// a fake host and a recorded post callback: every page â†’ host message, every host â†’ page
 /// shape the contract (docs/browser-bridge-contract.md) promises.
 /// </summary>
 public class BrowserBridgeTests : IDisposable
@@ -280,7 +280,7 @@ public class BrowserBridgeTests : IDisposable
 
         Assert.True(clips[Local.Key].GetProperty("isLocal").GetBoolean());
 
-        // State tags travel in stateDelta, never in the catalogue — not even New.
+        // State tags travel in stateDelta, never in the catalogue â€” not even New.
         Assert.DoesNotContain(clips.Values.SelectMany(c => c.GetProperty("tags").EnumerateArray()),
                               t => t.GetProperty("facet").GetString() == "State");
     }
@@ -352,6 +352,45 @@ public class BrowserBridgeTests : IDisposable
         ClearPosted();
         Send(built.Bridge, new { type = "setRotation", keys = new[] { Apple.Key }, value = true });
         Assert.Empty(Messages("stateDelta"));
+    }
+
+    [Fact]
+    public async Task Last_played_comes_from_the_cache_index_and_previewing_is_not_a_play()
+    {
+        var settings = NewSettings();
+        Directory.CreateDirectory(Path.Combine(settings.CacheDirectory!, "videos"));
+        var appleFile = VideoCache.KeyFor(new Uri(Apple.Urls.Uhd4KSdr!));
+        File.WriteAllBytes(Path.Combine(settings.CacheDirectory!, "videos", appleFile), new byte[1024]);
+
+        var built = await CreateReady(settings);
+        var stamped = built.Cache.Entries().Single().LastPlayedUtc; // adoption stamps it
+        var state = LastState();
+
+        var applePlayed = ClipState(state, Apple.Key).GetProperty("lastPlayedUtc");
+        Assert.Equal(DateTime.SpecifyKind(stamped, DateTimeKind.Utc), applePlayed.GetDateTime().ToUniversalTime());
+        Assert.EndsWith("Z", applePlayed.GetString());
+        Assert.Equal(JsonValueKind.Null, ClipState(state, Nasa.Key).GetProperty("lastPlayedUtc").ValueKind);
+        Assert.Equal(JsonValueKind.Null, ClipState(state, Local.Key).GetProperty("lastPlayedUtc").ValueKind);
+
+        // The browser's preview panel plays from the cache without stamping a play.
+        await Task.Delay(30);
+        Send(built.Bridge, new { type = "selectClip", key = Apple.Key });
+        Assert.Equal(Path.Combine(built.Cache.VideosDirectory, appleFile), _host.Shown.Last().Url);
+        Assert.Equal(stamped, built.Cache.Entries().Single().LastPlayedUtc);
+
+        // A real play by the saver (another process, so another VideoCache) does, and the page
+        // hears about it when the index watcher reloads (Refresh is what the watcher calls).
+        ClearPosted();
+        using (var saverCache = new VideoCache(settings, watchForChanges: false))
+            saverCache.Resolve(ClipResolver.PlayableClip(Apple, settings.Quality)!);
+        built.Cache.Refresh();
+        lock (_gate)
+            built.Bridge.FlushState();
+        Assert.True(built.Cache.Entries().Single().LastPlayedUtc > stamped);
+        var delta = LastState();
+        Assert.Equal([Apple.Key], delta.GetProperty("clips").EnumerateObject().Select(p => p.Name));
+        Assert.True(ClipState(delta, Apple.Key).GetProperty("lastPlayedUtc").GetDateTime().ToUniversalTime() >
+                    DateTime.SpecifyKind(stamped, DateTimeKind.Utc));
     }
 
     // ---- rotation ----------------------------------------------------------------------------
@@ -428,7 +467,7 @@ public class BrowserBridgeTests : IDisposable
         Assert.Empty(built.Settings.KeptOffline);
         Assert.Empty(Messages("stateDelta"));
 
-        // The page's "Raise limit to 2 GB?" → yes.
+        // The page's "Raise limit to 2 GB?" â†’ yes.
         Send(built.Bridge, new { type = "saveSettings", patch = new { cacheBudgetGb = refused.GetProperty("requiredGb").GetInt32() } });
         Assert.Equal(2, built.Settings.CacheBudgetGb);
         Assert.Equal(2.0, Messages("settings").Last().GetProperty("values").GetProperty("cacheBudgetGb").GetDouble());

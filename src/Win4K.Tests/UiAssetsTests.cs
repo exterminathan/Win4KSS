@@ -3,7 +3,7 @@ using Win4K.ScreenSaver.Browser;
 
 namespace Win4K.Tests;
 
-/// <summary>The page's static files on https://app.win4k/, and the fallback page until the UI lands.</summary>
+/// <summary>The page's static files on https://app.win4k/, and the fallback page served if index.html is ever missing.</summary>
 public class UiAssetsTests
 {
     [Theory]
@@ -19,6 +19,24 @@ public class UiAssetsTests
         Assert.Equal("text/html; charset=utf-8", asset.ContentType);
         if (!UiAssets.HasIndex)
             Assert.Contains("UI not built", Encoding.UTF8.GetString(asset.Body));
+    }
+
+    [Fact]
+    public void The_real_page_is_embedded_and_the_dev_harness_is_not()
+    {
+        Assert.True(UiAssets.HasIndex);
+        Assert.Equal(["app.css", "app.js", "index.html"], UiAssets.Files.Order(StringComparer.Ordinal));
+
+        // The page loads app.js itself and never the mock shim (docs/browser-mock/, not embedded).
+        var index = Encoding.UTF8.GetString(UiAssets.Resolve("/index.html")!.Body);
+        Assert.Contains("<script src=\"app.js\"></script>", index);
+        Assert.DoesNotContain("shim.js", index);
+
+        // The handshake: the listener goes in, then `ready` -- the host posts nothing before it.
+        var app = Encoding.UTF8.GetString(UiAssets.Resolve("/app.js")!.Body);
+        Assert.Contains("addEventListener('message'", app);
+        Assert.Contains("send('ready'", app);
+        Assert.True(app.IndexOf("addEventListener('message'", StringComparison.Ordinal) < app.IndexOf("send('ready'", StringComparison.Ordinal));
     }
 
     [Fact]

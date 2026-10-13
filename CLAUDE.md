@@ -8,7 +8,7 @@ Built for one user, on one machine, for personal use.
 
 ## Status
 
-**Built, installed (user scope), and working.** All eight phases complete; clip-browser Phase B (unified clip model + in-app catalogue refresh) Phase C (cache pins, download queue, multi-process safety) and Phase D (`MediaPreviewService`: grid stills + hover clips) and Phase F (settings v2: per-clip rotation) landed 2026-10-13, plus the C# half of Phase E (WebView2 clip browser: `BrowserForm` + `BrowserBridge`; `/c` opens it, `SettingsForm` is gone; the page itself, `Browser/ui/`, comes from the UI lane and until it merges a built-in "UI not built" bridge exerciser is served); 481 tests green. `/s`, `/c`, `/p`, `/w` and `/now` all verified against the published build; 4K HEVC streams and plays with `d3d11va` hardware decode, including the settings-dialog live preview.
+**Built, installed (user scope), and working.** All eight phases complete; clip-browser Phase B (unified clip model + in-app catalogue refresh) Phase C (cache pins, download queue, multi-process safety) and Phase D (`MediaPreviewService`: grid stills + hover clips) and Phase F (settings v2: per-clip rotation) landed 2026-10-13, and Phase E (WebView2 clip browser on `/c`: `BrowserForm` + `BrowserBridge` + the page in `Browser/ui/`; `SettingsForm` is gone). Both halves of Phase E were integrated and driven live against a copy of the real profile on 2026-10-13: grid with stills, facet counts, two-facet filtering, last-played sort, hover clips, live mpv preview aligned to the detail pane's video box, settings panel hiding the panel, a pin's progress, catalogue refresh, auto-add prompt. 483 tests green. `/s`, `/c`, `/p`, `/w` and `/now` all verified against the published build; 4K HEVC streams and plays with `d3d11va` hardware decode, including the settings-dialog live preview.
 
 Installed at `%LOCALAPPDATA%\Programs\Win4KSS\` (renamed from `Win4KAerial` on 2026-10-12 so Screen Saver Settings shows "Win4KSS"; `install-scr.ps1` removes the old files and repoints `SCRNSAVE.EXE`) with Desktop + Start Menu shortcuts bound to `Ctrl+Alt+S`. The full walk-away chain was observed working end to end: shortcut → `StartNow` → Windows launched our saver → 1500 ms manual grace → playing from cache.
 
@@ -16,7 +16,7 @@ Outstanding:
 - **System32 install** (only needed to appear in the Screen Saver Settings *dropdown*) — needs elevation: `scripts/install-scr.ps1 -SetAsDefault`.
 - **archive-org clips fail to stream ~23% of the time** (169 of 724 loads, Aug 14 – Oct 12 2026; zero Apple failures). mpv reports `loading failed (-13)` and the playlist skips ahead; the background download then caches the same clip fine, so the URL is valid and the stream path is what fails. Not yet diagnosed — re-run with `WIN4K_MPV_LOG=1` to see why.
 
-In daily use since 2026-08-14 as the idle saver (30-min timeout). `publish/` holds the Win4KSS build (rename + `/p` leak fix + Phases B–C, published 2026-10-13); the installed Win4KAerial build is older until reinstalled. The cache sits at its 20 GB budget, so LRU eviction is active. The earlier wedged `SPI_GETSCREENSAVERRUNNING` state cleared on reboot.
+In daily use since 2026-08-14 as the idle saver (30-min timeout). `publish/` holds the Win4KSS build (rename + `/p` leak fix + Phases B–F with the clip browser, published 2026-10-13); the installed Win4KAerial build is older until reinstalled. The cache sits at its 20 GB budget, so LRU eviction is active. The earlier wedged `SPI_GETSCREENSAVERRUNNING` state cleared on reboot.
 
 See [PLAN.md](PLAN.md) for the design and, at the bottom, the findings that contradicted it.
 
@@ -36,10 +36,11 @@ Win4KScreensavers/
 │   │   └── AppleTrust.cs, CaBundle.cs, Http.cs, Log.cs, Display.cs, AppPaths.cs
 │   ├── Win4K.ScreenSaver/   WinForms exe → Win4KSS.scr / Win4KSS.exe
 │   │   ├── Program.cs       CLI verbs (/c → clip browser, single instance); SaverForm.cs; SaverLauncher.cs ("Start now")
-│   │   ├── Browser/         BrowserForm (WebView2 + native mpv preview panel), BrowserBridge (page⇄services, contract: docs/browser-bridge-contract.md), UiAssets; ui/ = the page, embedded by wildcard
+│   │   ├── Browser/         BrowserForm (WebView2 + native mpv preview panel), BrowserBridge (page⇄services, contract: docs/browser-bridge-contract.md), UiAssets; ui/ = the page (index.html, app.js, app.css — vanilla JS, no build step), embedded by wildcard
 │   │   └── InputDismissWatcher.cs, LaunchContext.cs, PreviewLifetime.cs, ShortcutManager.cs, NativeMethods.cs
-│   └── Win4K.Tests/         xunit (419); Fixtures/ = trimmed upstream samples for the harvesters
+│   └── Win4K.Tests/         xunit (483); Fixtures/ = trimmed upstream samples for the harvesters
 ├── assets/                  fallback-entries.json, apple-root-ca.cer, registry/
+├── docs/                    browser-bridge-contract.md (page⇄host), browser-mock/ (dev harness: dev.html + shim.js + fixture.json; never embedded), squishy-teacup-plan.md
 ├── native/mpv/              libmpv-2.dll — gitignored, fetched by script
 ├── scripts/                 fetch-libmpv.ps1, install-scr.ps1
 ├── publish/                 single-file output (gitignored)
@@ -58,7 +59,9 @@ Runtime state lives in `%LOCALAPPDATA%\Win4KScreensavers\`: `settings.json`, `ma
 - **Test isolation:** `TestEnvironment` points `WIN4K_HOME` at a temp dir for the whole run; a test that needs its own app-data root uses `using var _ = AppPaths.UseRoot(dir)` (AsyncLocal). Never set `WIN4K_HOME` inside a test — it is process-wide, and flipping it is what made `CaBundleTests` fail intermittently. Harvester tests use `Fakes/FixtureHttp` (an `HttpMessageHandler`), never the network.
 - **Publish:** `dotnet publish src/Win4K.ScreenSaver/Win4K.ScreenSaver.csproj -c Release -o publish` (single-file, ~124 MB; `WebView2Loader.dll` is bundled and self-extracted like libmpv)
 - **Install:** `scripts/install-scr.ps1` (self-elevates; `-SetAsDefault`, `-Uninstall`)
-- **Clip browser (`/c`):** WebView2 page from `https://app.win4k/` (embedded `Browser/ui/**`), previews from `https://previews.win4k/` (folder mapping). The page and host talk only through `docs/browser-bridge-contract.md`; the page sends `ready` first. Smoke-test it against a temp `WIN4K_HOME` copy of the profile — opening it migrates the real `settings.json` to v2.
+- **Clip browser (`/c`):** WebView2 page from `https://app.win4k/` (embedded `Browser/ui/**`), previews from `https://previews.win4k/` (folder mapping). The page and host talk only through `docs/browser-bridge-contract.md`; the page sends `ready` first. Smoke-test it against a temp `WIN4K_HOME` copy of the profile — opening it migrates the real `settings.json` to v2. Copy `settings.json` with `cacheDirectory` blanked (the real one points at the real cache), `manifest.json`, `ca-bundle.pem`; hard-link a few cache videos and copy `cache-index.json` to get cached clips with real last-played times (entries without files are dropped on load).
+- **Driving the live browser:** launch `Win4KSS.exe /c` with `UseShellExecute=false` and `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9333 --disable-features=CalculateNativeWinOcclusion` — no app hook needed; any CDP client (Node 22+ has `WebSocket`) can `Runtime.evaluate` and `Input.dispatchMouseEvent` (real hover). Capture the window with `PrintWindow(hwnd, hdc, PW_RENDERFULLCONTENT=2)`, not `CopyFromScreen`: a running saver is topmost and would be captured instead, and the occlusion flag keeps a covered WebView painting. Diff two captures a few seconds apart to tell live mpv video from the still beneath it. Shortcut toggles write the **real** Desktop/Start Menu `.lnk` files even under a temp `WIN4K_HOME` — don't flip them in a test. Close with `WM_CLOSE`. Page errors land in `win4k.log` as `Page: …`.
+- **Page dev harness:** `python -m http.server` from the repo root, open `/docs/browser-mock/dev.html` — the real `index.html` markup and `app.js` against `shim.js` + `fixture.json`.
 - **Debugging playback:** `$env:WIN4K_MPV_LOG="1"` raises `mpv.log` from warnings to full debug
 - Both projects need `<AllowUnsafeBlocks>` — `[LibraryImport]` source-generated marshalling requires it
 - **Settings live in JSON**, not the registry: `%LOCALAPPDATA%\Win4KScreensavers\settings.json`. Cache and manifest live alongside it.

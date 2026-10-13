@@ -1,10 +1,9 @@
 {
-  "$comment": "Dev-harness fixture for the Phase E browser UI. Shaped exactly like the real host->page messages in docs/browser-bridge-contract.md. 'messages' is the order shim.js replays them in, which loosely mirrors a real BrowserForm startup: settings and cacheStats are cheap and local so they arrive first, the catalogue load takes a beat, and stateDelta follows once PinManager/DownloadQueue have a baseline. previewReady events are NOT listed here -- shim.js synthesizes them on demand when the page sends requestPreviews, using the still/hover files under docs/browser-mock/assets/.",
-
+  "$comment": "Dev-harness fixture for the Phase E browser UI, in the exact shapes of docs/browser-bridge-contract.md (re-checked against the real host on 2026-10-13). 'messages' is what shim.js replays each time the page posts 'ready', in the host's order: settings, catalog, a full stateDelta, cacheStats. previewReady is not listed: shim.js answers requestPreviews from the sample files under assets/.",
   "messages": [
     {
       "type": "settings",
-      "delayMs": 50,
+      "delayMs": 20,
       "values": {
         "quality": "Auto",
         "multiMonitorMode": "MainOnly",
@@ -13,41 +12,98 @@
         "cacheEnabled": true,
         "cacheDirectory": "C:\\Users\\nathan\\AppData\\Local\\Win4KScreensavers\\cache",
         "cacheBudgetGb": 20.0,
-        "localFolders": ["D:\\Videos\\Aerial"],
-        "ffmpegPath": "C:\\ffmpeg\\ffmpeg.exe",
-        "autoAddSources": ["apple", "aerial-manifests:apple-tvos26"],
-        "availableSources": [
-          "apple", "archive-org", "nasa",
-          "aerial-manifests:apple-tvos26", "aerial-manifests:amazon-fireos8",
-          "aerial-manifests:jetson-creative", "aerial-manifests:robin-fourcade"
+        "localFolders": [
+          "D:\\Videos\\Aerial"
         ],
-        "previewCapabilities": { "ffmpegAvailable": true, "hoverClips": true }
+        "ffmpegPath": "C:\\ffmpeg\\ffmpeg.exe",
+        "autoAddSources": [
+          "apple",
+          "local"
+        ],
+        "availableSources": [
+          "apple",
+          "aerial-manifests",
+          "archive-org",
+          "nasa",
+          "local"
+        ],
+        "previewCapabilities": {
+          "ffmpegAvailable": true,
+          "hoverClips": true,
+          "ffmpegPath": "C:\\ffmpeg\\ffmpeg.exe"
+        },
+        "shortcutDesktop": true,
+        "shortcutStartMenu": true,
+        "hotkey": "CTRL+ALT+S"
+      },
+      "sources": [
+        {
+          "id": "apple",
+          "name": "Apple TV aerials",
+          "clipCount": 3,
+          "autoAdd": true
+        },
+        {
+          "id": "aerial-manifests",
+          "name": "Aerial manifests (tvOS 26, Fire TV, community)",
+          "clipCount": 5,
+          "autoAdd": false
+        },
+        {
+          "id": "archive-org",
+          "name": "Internet Archive",
+          "clipCount": 6,
+          "autoAdd": false
+        },
+        {
+          "id": "nasa",
+          "name": "NASA",
+          "clipCount": 2,
+          "autoAdd": false
+        },
+        {
+          "id": "local",
+          "name": "Local folders",
+          "clipCount": 2,
+          "autoAdd": true
+        }
+      ],
+      "about": {
+        "version": "1.0.0.0",
+        "mpvVersion": "2.5",
+        "dataFolder": "C:\\Users\\nathan\\AppData\\Local\\Win4KScreensavers",
+        "settingsFile": "C:\\Users\\nathan\\AppData\\Local\\Win4KScreensavers\\settings.json",
+        "logFile": "C:\\Users\\nathan\\AppData\\Local\\Win4KScreensavers\\win4k.log",
+        "mpvLog": "C:\\Users\\nathan\\AppData\\Local\\Win4KScreensavers\\mpv.log",
+        "cacheFolder": "C:\\Users\\nathan\\AppData\\Local\\Win4KScreensavers\\cache",
+        "previewsFolder": "C:\\Users\\nathan\\AppData\\Local\\Win4KScreensavers\\previews"
       }
     },
     {
-      "type": "cacheStats",
-      "delayMs": 60,
-      "pinnedBytes": 12000000000,
-      "rollingBytes": 7800000000,
-      "budgetBytes": 21474836480,
-      "freeDiskBytes": 90000000000
-    },
-    {
       "type": "catalog",
-      "delayMs": 220,
+      "delayMs": 150,
       "clips": [
         {
           "key": "apple:7825C73A-A43F-4F8C-8C68-5D5C6D4F9A11",
           "sourceId": "apple",
-          "sourceIds": ["apple", "aerial-manifests:apple-tvos26"],
+          "sourceIds": [
+            "apple",
+            "apple-tvos26"
+          ],
           "title": "Hawaii Coastline",
           "category": "Landscapes",
           "subcategory": "Hawaii",
-          "captions": [{ "atSeconds": 0, "text": "Volcanic coast at sunrise" }],
+          "captions": [
+            {
+              "atSeconds": 0,
+              "text": "Volcanic coast at sunrise"
+            }
+          ],
           "creator": null,
           "licence": null,
           "subjects": [],
-          "width": 3840, "height": 2160,
+          "width": 3840,
+          "height": 2160,
           "durationSeconds": 274.8,
           "sizeBytes": 346000000,
           "codec": "hevc",
@@ -57,21 +113,55 @@
           "isLocal": false,
           "addedUtc": null,
           "tags": [
-            { "facet": "Source", "value": "Apple" },
-            { "facet": "Category", "value": "Landscapes" },
-            { "facet": "Subcategory", "value": "Hawaii" },
-            { "facet": "TimeOfDay", "value": "Day" },
-            { "facet": "Resolution", "value": "4K" },
-            { "facet": "Aspect", "value": "16:9" },
-            { "facet": "DynamicRange", "value": "HDR available" },
-            { "facet": "Duration", "value": "3\u201310 min" },
-            { "facet": "Codec", "value": "HEVC" }
-          ]
+            {
+              "facet": "Source",
+              "value": "Apple"
+            },
+            {
+              "facet": "Category",
+              "value": "Landscapes"
+            },
+            {
+              "facet": "Subcategory",
+              "value": "Hawaii"
+            },
+            {
+              "facet": "TimeOfDay",
+              "value": "Day"
+            },
+            {
+              "facet": "Resolution",
+              "value": "4K"
+            },
+            {
+              "facet": "Aspect",
+              "value": "16:9"
+            },
+            {
+              "facet": "DynamicRange",
+              "value": "HDR available"
+            },
+            {
+              "facet": "Duration",
+              "value": "3–10 min"
+            },
+            {
+              "facet": "Codec",
+              "value": "HEVC"
+            }
+          ],
+          "sources": [
+            "aerial-manifests",
+            "apple"
+          ],
+          "description": null
         },
         {
           "key": "apple:12E4F9B0-77D1-4B9A-9E2D-1A6F0C33DE02",
           "sourceId": "apple",
-          "sourceIds": ["apple"],
+          "sourceIds": [
+            "apple"
+          ],
           "title": "Grand Canyon",
           "category": "Landscapes",
           "subcategory": "Grand Canyon",
@@ -79,7 +169,8 @@
           "creator": null,
           "licence": null,
           "subjects": [],
-          "width": 3840, "height": 2160,
+          "width": 3840,
+          "height": 2160,
           "durationSeconds": 210.5,
           "sizeBytes": 341000000,
           "codec": "hevc",
@@ -89,27 +180,61 @@
           "isLocal": false,
           "addedUtc": null,
           "tags": [
-            { "facet": "Source", "value": "Apple" },
-            { "facet": "Category", "value": "Landscapes" },
-            { "facet": "Subcategory", "value": "Grand Canyon" },
-            { "facet": "Resolution", "value": "4K" },
-            { "facet": "Aspect", "value": "16:9" },
-            { "facet": "Duration", "value": "3\u201310 min" },
-            { "facet": "Codec", "value": "HEVC" }
-          ]
+            {
+              "facet": "Source",
+              "value": "Apple"
+            },
+            {
+              "facet": "Category",
+              "value": "Landscapes"
+            },
+            {
+              "facet": "Subcategory",
+              "value": "Grand Canyon"
+            },
+            {
+              "facet": "Resolution",
+              "value": "4K"
+            },
+            {
+              "facet": "Aspect",
+              "value": "16:9"
+            },
+            {
+              "facet": "Duration",
+              "value": "3–10 min"
+            },
+            {
+              "facet": "Codec",
+              "value": "HEVC"
+            }
+          ],
+          "sources": [
+            "apple"
+          ],
+          "description": null
         },
         {
           "key": "apple:9F3D21AA-5C44-4E9B-8B9B-3E1EAB7C1004",
           "sourceId": "apple",
-          "sourceIds": ["apple", "aerial-manifests:apple-tvos26"],
+          "sourceIds": [
+            "apple",
+            "apple-tvos26"
+          ],
           "title": "New York City Night",
           "category": "Cities",
           "subcategory": "New York",
-          "captions": [{ "atSeconds": 0, "text": "Manhattan skyline after dark" }],
+          "captions": [
+            {
+              "atSeconds": 0,
+              "text": "Manhattan skyline after dark"
+            }
+          ],
           "creator": null,
           "licence": null,
           "subjects": [],
-          "width": 3840, "height": 2160,
+          "width": 3840,
+          "height": 2160,
           "durationSeconds": 195.2,
           "sizeBytes": 338000000,
           "codec": "hevc",
@@ -119,29 +244,66 @@
           "isLocal": false,
           "addedUtc": null,
           "tags": [
-            { "facet": "Source", "value": "Apple" },
-            { "facet": "Category", "value": "Cities" },
-            { "facet": "Subcategory", "value": "New York" },
-            { "facet": "TimeOfDay", "value": "Night" },
-            { "facet": "Resolution", "value": "4K" },
-            { "facet": "Aspect", "value": "16:9" },
-            { "facet": "DynamicRange", "value": "HDR available" },
-            { "facet": "Duration", "value": "3\u201310 min" },
-            { "facet": "Codec", "value": "HEVC" }
-          ]
+            {
+              "facet": "Source",
+              "value": "Apple"
+            },
+            {
+              "facet": "Category",
+              "value": "Cities"
+            },
+            {
+              "facet": "Subcategory",
+              "value": "New York"
+            },
+            {
+              "facet": "TimeOfDay",
+              "value": "Night"
+            },
+            {
+              "facet": "Resolution",
+              "value": "4K"
+            },
+            {
+              "facet": "Aspect",
+              "value": "16:9"
+            },
+            {
+              "facet": "DynamicRange",
+              "value": "HDR available"
+            },
+            {
+              "facet": "Duration",
+              "value": "3–10 min"
+            },
+            {
+              "facet": "Codec",
+              "value": "HEVC"
+            }
+          ],
+          "sources": [
+            "aerial-manifests",
+            "apple"
+          ],
+          "description": null
         },
         {
           "key": "ia:Fire7345s4kRes/Fire 66 - 45s - 4k res.mp4",
           "sourceId": "archive-org",
-          "sourceIds": ["archive-org"],
+          "sourceIds": [
+            "archive-org"
+          ],
           "title": "Fire 66 - 45s - 4k res",
           "category": "Other",
           "subcategory": null,
           "captions": [],
           "creator": "Videvo",
           "licence": "Public Domain",
-          "subjects": ["fire stock footage"],
-          "width": 3840, "height": 2160,
+          "subjects": [
+            "fire stock footage"
+          ],
+          "width": 3840,
+          "height": 2160,
           "durationSeconds": 45,
           "sizeBytes": 85000000,
           "codec": "h264",
@@ -151,27 +313,57 @@
           "isLocal": false,
           "addedUtc": "2026-10-10T00:00:00Z",
           "tags": [
-            { "facet": "Source", "value": "Internet Archive" },
-            { "facet": "Subject", "value": "Fire" },
-            { "facet": "Resolution", "value": "4K" },
-            { "facet": "Aspect", "value": "16:9" },
-            { "facet": "Duration", "value": "30\u201360 s" },
-            { "facet": "Codec", "value": "H.264" },
-            { "facet": "Licence", "value": "Public Domain" }
-          ]
+            {
+              "facet": "Source",
+              "value": "Internet Archive"
+            },
+            {
+              "facet": "Subject",
+              "value": "Fire"
+            },
+            {
+              "facet": "Resolution",
+              "value": "4K"
+            },
+            {
+              "facet": "Aspect",
+              "value": "16:9"
+            },
+            {
+              "facet": "Duration",
+              "value": "30–60 s"
+            },
+            {
+              "facet": "Codec",
+              "value": "H.264"
+            },
+            {
+              "facet": "Licence",
+              "value": "Public Domain"
+            }
+          ],
+          "sources": [
+            "archive-org"
+          ],
+          "description": null
         },
         {
           "key": "ia:ThinSmoke974KRes/Thin Smoke 12 - 30s - 4k res.mp4",
           "sourceId": "archive-org",
-          "sourceIds": ["archive-org"],
+          "sourceIds": [
+            "archive-org"
+          ],
           "title": "Thin Smoke 12 - 30s - 4k res",
           "category": "Other",
           "subcategory": null,
           "captions": [],
           "creator": "Videvo",
           "licence": "Public Domain",
-          "subjects": ["thin smoke stock footage"],
-          "width": 4096, "height": 2160,
+          "subjects": [
+            "thin smoke stock footage"
+          ],
+          "width": 4096,
+          "height": 2160,
           "durationSeconds": 30,
           "sizeBytes": 61000000,
           "codec": "h264",
@@ -181,27 +373,57 @@
           "isLocal": false,
           "addedUtc": "2026-08-12T00:00:00Z",
           "tags": [
-            { "facet": "Source", "value": "Internet Archive" },
-            { "facet": "Subject", "value": "Thin Smoke" },
-            { "facet": "Resolution", "value": "4K" },
-            { "facet": "Aspect", "value": "16:9" },
-            { "facet": "Duration", "value": "30\u201360 s" },
-            { "facet": "Codec", "value": "H.264" },
-            { "facet": "Licence", "value": "Public Domain" }
-          ]
+            {
+              "facet": "Source",
+              "value": "Internet Archive"
+            },
+            {
+              "facet": "Subject",
+              "value": "Thin Smoke"
+            },
+            {
+              "facet": "Resolution",
+              "value": "4K"
+            },
+            {
+              "facet": "Aspect",
+              "value": "16:9"
+            },
+            {
+              "facet": "Duration",
+              "value": "30–60 s"
+            },
+            {
+              "facet": "Codec",
+              "value": "H.264"
+            },
+            {
+              "facet": "Licence",
+              "value": "Public Domain"
+            }
+          ],
+          "sources": [
+            "archive-org"
+          ],
+          "description": null
         },
         {
           "key": "ia:Water614KRes/Water 6 - 20s - 4k res.mp4",
           "sourceId": "archive-org",
-          "sourceIds": ["archive-org"],
+          "sourceIds": [
+            "archive-org"
+          ],
           "title": "Water 6 - 20s - 4k res",
           "category": "Other",
           "subcategory": null,
           "captions": [],
           "creator": "Videvo",
           "licence": "Public Domain",
-          "subjects": ["water stock footage"],
-          "width": 3840, "height": 2160,
+          "subjects": [
+            "water stock footage"
+          ],
+          "width": 3840,
+          "height": 2160,
           "durationSeconds": 20,
           "sizeBytes": 40000000,
           "codec": "h264",
@@ -211,19 +433,46 @@
           "isLocal": false,
           "addedUtc": "2026-08-12T00:00:00Z",
           "tags": [
-            { "facet": "Source", "value": "Internet Archive" },
-            { "facet": "Subject", "value": "Water" },
-            { "facet": "Resolution", "value": "4K" },
-            { "facet": "Aspect", "value": "16:9" },
-            { "facet": "Duration", "value": "<30 s" },
-            { "facet": "Codec", "value": "H.264" },
-            { "facet": "Licence", "value": "Public Domain" }
-          ]
+            {
+              "facet": "Source",
+              "value": "Internet Archive"
+            },
+            {
+              "facet": "Subject",
+              "value": "Water"
+            },
+            {
+              "facet": "Resolution",
+              "value": "4K"
+            },
+            {
+              "facet": "Aspect",
+              "value": "16:9"
+            },
+            {
+              "facet": "Duration",
+              "value": "<30 s"
+            },
+            {
+              "facet": "Codec",
+              "value": "H.264"
+            },
+            {
+              "facet": "Licence",
+              "value": "Public Domain"
+            }
+          ],
+          "sources": [
+            "archive-org"
+          ],
+          "description": null
         },
         {
           "key": "ia:pixabay-4006/aerial-canyon-4006.mp4",
           "sourceId": "archive-org",
-          "sourceIds": ["archive-org"],
+          "sourceIds": [
+            "archive-org"
+          ],
           "title": "aerial-canyon-4006",
           "category": "Mixed",
           "subcategory": null,
@@ -231,7 +480,8 @@
           "creator": "Pixabay",
           "licence": "CC0",
           "subjects": [],
-          "width": 3840, "height": 2160,
+          "width": 3840,
+          "height": 2160,
           "durationSeconds": 38.4,
           "sizeBytes": 71000000,
           "codec": "h264",
@@ -241,18 +491,42 @@
           "isLocal": false,
           "addedUtc": "2026-08-12T00:00:00Z",
           "tags": [
-            { "facet": "Source", "value": "Internet Archive" },
-            { "facet": "Resolution", "value": "4K" },
-            { "facet": "Aspect", "value": "16:9" },
-            { "facet": "Duration", "value": "30\u201360 s" },
-            { "facet": "Codec", "value": "H.264" },
-            { "facet": "Licence", "value": "CC0" }
-          ]
+            {
+              "facet": "Source",
+              "value": "Internet Archive"
+            },
+            {
+              "facet": "Resolution",
+              "value": "4K"
+            },
+            {
+              "facet": "Aspect",
+              "value": "16:9"
+            },
+            {
+              "facet": "Duration",
+              "value": "30–60 s"
+            },
+            {
+              "facet": "Codec",
+              "value": "H.264"
+            },
+            {
+              "facet": "Licence",
+              "value": "CC0"
+            }
+          ],
+          "sources": [
+            "archive-org"
+          ],
+          "description": null
         },
         {
           "key": "ia:pixabay-9981/forest-canopy-8k.mp4",
           "sourceId": "archive-org",
-          "sourceIds": ["archive-org"],
+          "sourceIds": [
+            "archive-org"
+          ],
           "title": "forest-canopy-8k",
           "category": "Mixed",
           "subcategory": null,
@@ -260,7 +534,8 @@
           "creator": "Pixabay",
           "licence": "CC0",
           "subjects": [],
-          "width": 7680, "height": 4320,
+          "width": 7680,
+          "height": 4320,
           "durationSeconds": 52,
           "sizeBytes": 190000000,
           "codec": "h264",
@@ -270,26 +545,53 @@
           "isLocal": false,
           "addedUtc": "2026-10-05T00:00:00Z",
           "tags": [
-            { "facet": "Source", "value": "Internet Archive" },
-            { "facet": "Resolution", "value": "8K" },
-            { "facet": "Aspect", "value": "16:9" },
-            { "facet": "Duration", "value": "30\u201360 s" },
-            { "facet": "Codec", "value": "H.264" },
-            { "facet": "Licence", "value": "CC0" }
-          ]
+            {
+              "facet": "Source",
+              "value": "Internet Archive"
+            },
+            {
+              "facet": "Resolution",
+              "value": "8K"
+            },
+            {
+              "facet": "Aspect",
+              "value": "16:9"
+            },
+            {
+              "facet": "Duration",
+              "value": "30–60 s"
+            },
+            {
+              "facet": "Codec",
+              "value": "H.264"
+            },
+            {
+              "facet": "Licence",
+              "value": "CC0"
+            }
+          ],
+          "sources": [
+            "archive-org"
+          ],
+          "description": null
         },
         {
           "key": "ia:scenic-letterbox/canyon-flight-237.mp4",
           "sourceId": "archive-org",
-          "sourceIds": ["archive-org"],
+          "sourceIds": [
+            "archive-org"
+          ],
           "title": "canyon-flight-237",
           "category": "Other",
           "subcategory": null,
           "captions": [],
           "creator": "RED Films",
           "licence": null,
-          "subjects": ["canyon stock footage"],
-          "width": 4096, "height": 1728,
+          "subjects": [
+            "canyon stock footage"
+          ],
+          "width": 4096,
+          "height": 1728,
           "durationSeconds": 64,
           "sizeBytes": 110000000,
           "codec": "h264",
@@ -299,26 +601,56 @@
           "isLocal": false,
           "addedUtc": "2026-08-12T00:00:00Z",
           "tags": [
-            { "facet": "Source", "value": "Internet Archive" },
-            { "facet": "Subject", "value": "Canyon" },
-            { "facet": "Resolution", "value": "4K" },
-            { "facet": "Aspect", "value": "Ultrawide" },
-            { "facet": "Duration", "value": "1\u20133 min" },
-            { "facet": "Codec", "value": "H.264" }
-          ]
+            {
+              "facet": "Source",
+              "value": "Internet Archive"
+            },
+            {
+              "facet": "Subject",
+              "value": "Canyon"
+            },
+            {
+              "facet": "Resolution",
+              "value": "4K"
+            },
+            {
+              "facet": "Aspect",
+              "value": "Ultrawide"
+            },
+            {
+              "facet": "Duration",
+              "value": "1–3 min"
+            },
+            {
+              "facet": "Codec",
+              "value": "H.264"
+            }
+          ],
+          "sources": [
+            "archive-org"
+          ],
+          "description": null
         },
         {
           "key": "nasa:expedition65",
           "sourceId": "nasa",
-          "sourceIds": ["nasa"],
+          "sourceIds": [
+            "nasa"
+          ],
           "title": "Earth from Space in 4K, Expedition 65 Edition",
           "category": "Space",
           "subcategory": null,
           "captions": [],
           "creator": "NASA",
           "licence": "Public Domain",
-          "subjects": ["Earth", "ISS", "orbit", "timelapse"],
-          "width": 4096, "height": 2160,
+          "subjects": [
+            "Earth",
+            "ISS",
+            "orbit",
+            "timelapse"
+          ],
+          "width": 4096,
+          "height": 2160,
           "durationSeconds": 3000,
           "sizeBytes": 4050000000,
           "codec": "h264",
@@ -328,27 +660,59 @@
           "isLocal": false,
           "addedUtc": "2026-08-12T00:00:00Z",
           "tags": [
-            { "facet": "Source", "value": "NASA" },
-            { "facet": "Category", "value": "Space" },
-            { "facet": "Resolution", "value": "4K" },
-            { "facet": "Aspect", "value": "16:9" },
-            { "facet": "Duration", "value": "10 min+" },
-            { "facet": "Codec", "value": "H.264" },
-            { "facet": "Licence", "value": "Public Domain" }
-          ]
+            {
+              "facet": "Source",
+              "value": "NASA"
+            },
+            {
+              "facet": "Category",
+              "value": "Space"
+            },
+            {
+              "facet": "Resolution",
+              "value": "4K"
+            },
+            {
+              "facet": "Aspect",
+              "value": "16:9"
+            },
+            {
+              "facet": "Duration",
+              "value": "10 min+"
+            },
+            {
+              "facet": "Codec",
+              "value": "H.264"
+            },
+            {
+              "facet": "Licence",
+              "value": "Public Domain"
+            }
+          ],
+          "sources": [
+            "nasa"
+          ],
+          "description": "Time-lapse footage taken by the crew aboard the International Space Station."
         },
         {
           "key": "nasa:earthviews",
           "sourceId": "nasa",
-          "sourceIds": ["nasa"],
+          "sourceIds": [
+            "nasa"
+          ],
           "title": "Earth Views Timelapse",
           "category": "Space",
           "subcategory": null,
           "captions": [],
           "creator": "NASA",
           "licence": "Public Domain",
-          "subjects": ["Earth", "timelapse", "orbit"],
-          "width": 3840, "height": 2160,
+          "subjects": [
+            "Earth",
+            "timelapse",
+            "orbit"
+          ],
+          "width": 3840,
+          "height": 2160,
           "durationSeconds": 480,
           "sizeBytes": 620000000,
           "codec": "h264",
@@ -358,19 +722,47 @@
           "isLocal": false,
           "addedUtc": "2026-08-12T00:00:00Z",
           "tags": [
-            { "facet": "Source", "value": "NASA" },
-            { "facet": "Category", "value": "Space" },
-            { "facet": "Resolution", "value": "4K" },
-            { "facet": "Aspect", "value": "16:9" },
-            { "facet": "Duration", "value": "3\u201310 min" },
-            { "facet": "Codec", "value": "H.264" },
-            { "facet": "Licence", "value": "Public Domain" }
-          ]
+            {
+              "facet": "Source",
+              "value": "NASA"
+            },
+            {
+              "facet": "Category",
+              "value": "Space"
+            },
+            {
+              "facet": "Resolution",
+              "value": "4K"
+            },
+            {
+              "facet": "Aspect",
+              "value": "16:9"
+            },
+            {
+              "facet": "Duration",
+              "value": "3–10 min"
+            },
+            {
+              "facet": "Codec",
+              "value": "H.264"
+            },
+            {
+              "facet": "Licence",
+              "value": "Public Domain"
+            }
+          ],
+          "sources": [
+            "nasa"
+          ],
+          "description": "Time-lapse footage taken by the crew aboard the International Space Station."
         },
         {
           "key": "amazon:content-fireos8-grandteton",
           "sourceId": "amazon-fireos8",
-          "sourceIds": ["amazon-fireos8", "aerial-manifests:amazon-fireos8"],
+          "sourceIds": [
+            "amazon-fireos8",
+            "amazon-fireos8"
+          ],
           "title": "Grand Teton",
           "category": "Landscapes",
           "subcategory": "Mountains",
@@ -378,7 +770,8 @@
           "creator": null,
           "licence": null,
           "subjects": [],
-          "width": 3840, "height": 2160,
+          "width": 3840,
+          "height": 2160,
           "durationSeconds": 188,
           "sizeBytes": 300000000,
           "codec": "hevc",
@@ -388,20 +781,51 @@
           "isLocal": false,
           "addedUtc": "2026-08-12T00:00:00Z",
           "tags": [
-            { "facet": "Source", "value": "Amazon" },
-            { "facet": "Category", "value": "Landscapes" },
-            { "facet": "Subcategory", "value": "Mountains" },
-            { "facet": "TimeOfDay", "value": "Sunset" },
-            { "facet": "Resolution", "value": "4K" },
-            { "facet": "Aspect", "value": "16:9" },
-            { "facet": "Duration", "value": "3\u201310 min" },
-            { "facet": "Codec", "value": "HEVC" }
-          ]
+            {
+              "facet": "Source",
+              "value": "Amazon"
+            },
+            {
+              "facet": "Category",
+              "value": "Landscapes"
+            },
+            {
+              "facet": "Subcategory",
+              "value": "Mountains"
+            },
+            {
+              "facet": "TimeOfDay",
+              "value": "Sunset"
+            },
+            {
+              "facet": "Resolution",
+              "value": "4K"
+            },
+            {
+              "facet": "Aspect",
+              "value": "16:9"
+            },
+            {
+              "facet": "Duration",
+              "value": "3–10 min"
+            },
+            {
+              "facet": "Codec",
+              "value": "HEVC"
+            }
+          ],
+          "sources": [
+            "aerial-manifests"
+          ],
+          "description": null
         },
         {
           "key": "jetson:jc-0091",
           "sourceId": "jetson-creative",
-          "sourceIds": ["jetson-creative", "aerial-manifests:jetson-creative"],
+          "sourceIds": [
+            "jetson-creative",
+            "jetson-creative"
+          ],
           "title": "Coastal Cliffs",
           "category": "Landscapes",
           "subcategory": "Coast",
@@ -409,7 +833,8 @@
           "creator": "Jetson Creative",
           "licence": null,
           "subjects": [],
-          "width": 3840, "height": 2160,
+          "width": 3840,
+          "height": 2160,
           "durationSeconds": 96,
           "sizeBytes": 210000000,
           "codec": "hevc",
@@ -419,20 +844,51 @@
           "isLocal": false,
           "addedUtc": "2026-08-12T00:00:00Z",
           "tags": [
-            { "facet": "Source", "value": "Jetson" },
-            { "facet": "Category", "value": "Landscapes" },
-            { "facet": "Subcategory", "value": "Coast" },
-            { "facet": "TimeOfDay", "value": "Day" },
-            { "facet": "Resolution", "value": "4K" },
-            { "facet": "Aspect", "value": "16:9" },
-            { "facet": "Duration", "value": "1\u20133 min" },
-            { "facet": "Codec", "value": "HEVC" }
-          ]
+            {
+              "facet": "Source",
+              "value": "Jetson"
+            },
+            {
+              "facet": "Category",
+              "value": "Landscapes"
+            },
+            {
+              "facet": "Subcategory",
+              "value": "Coast"
+            },
+            {
+              "facet": "TimeOfDay",
+              "value": "Day"
+            },
+            {
+              "facet": "Resolution",
+              "value": "4K"
+            },
+            {
+              "facet": "Aspect",
+              "value": "16:9"
+            },
+            {
+              "facet": "Duration",
+              "value": "1–3 min"
+            },
+            {
+              "facet": "Codec",
+              "value": "HEVC"
+            }
+          ],
+          "sources": [
+            "aerial-manifests"
+          ],
+          "description": null
         },
         {
           "key": "robin:rf-0042",
           "sourceId": "robin-fourcade",
-          "sourceIds": ["robin-fourcade", "aerial-manifests:robin-fourcade"],
+          "sourceIds": [
+            "robin-fourcade",
+            "robin-fourcade"
+          ],
           "title": "Desert Dunes at Dusk",
           "category": "Landscapes",
           "subcategory": "Desert",
@@ -440,7 +896,8 @@
           "creator": "Robin Fourcade",
           "licence": null,
           "subjects": [],
-          "width": 3840, "height": 2160,
+          "width": 3840,
+          "height": 2160,
           "durationSeconds": 142,
           "sizeBytes": 250000000,
           "codec": "hevc",
@@ -450,20 +907,50 @@
           "isLocal": false,
           "addedUtc": "2026-08-12T00:00:00Z",
           "tags": [
-            { "facet": "Source", "value": "Robin" },
-            { "facet": "Category", "value": "Landscapes" },
-            { "facet": "Subcategory", "value": "Desert" },
-            { "facet": "TimeOfDay", "value": "Sunset" },
-            { "facet": "Resolution", "value": "4K" },
-            { "facet": "Aspect", "value": "16:9" },
-            { "facet": "Duration", "value": "1\u20133 min" },
-            { "facet": "Codec", "value": "HEVC" }
-          ]
+            {
+              "facet": "Source",
+              "value": "Robin"
+            },
+            {
+              "facet": "Category",
+              "value": "Landscapes"
+            },
+            {
+              "facet": "Subcategory",
+              "value": "Desert"
+            },
+            {
+              "facet": "TimeOfDay",
+              "value": "Sunset"
+            },
+            {
+              "facet": "Resolution",
+              "value": "4K"
+            },
+            {
+              "facet": "Aspect",
+              "value": "16:9"
+            },
+            {
+              "facet": "Duration",
+              "value": "1–3 min"
+            },
+            {
+              "facet": "Codec",
+              "value": "HEVC"
+            }
+          ],
+          "sources": [
+            "aerial-manifests"
+          ],
+          "description": null
         },
         {
           "key": "local:D:\\Videos\\Aerial\\sunset-ridge.mp4",
           "sourceId": "local",
-          "sourceIds": ["local"],
+          "sourceIds": [
+            "local"
+          ],
           "title": "sunset-ridge",
           "category": "Local",
           "subcategory": null,
@@ -471,7 +958,8 @@
           "creator": null,
           "licence": null,
           "subjects": [],
-          "width": null, "height": null,
+          "width": null,
+          "height": null,
           "durationSeconds": null,
           "sizeBytes": 512000000,
           "codec": null,
@@ -481,14 +969,26 @@
           "isLocal": true,
           "addedUtc": null,
           "tags": [
-            { "facet": "Source", "value": "Local" },
-            { "facet": "Category", "value": "Local" }
-          ]
+            {
+              "facet": "Source",
+              "value": "Local"
+            },
+            {
+              "facet": "Category",
+              "value": "Local"
+            }
+          ],
+          "sources": [
+            "local"
+          ],
+          "description": null
         },
         {
           "key": "local:D:\\Videos\\Aerial\\city-timelapse.mp4",
           "sourceId": "local",
-          "sourceIds": ["local"],
+          "sourceIds": [
+            "local"
+          ],
           "title": "city-timelapse",
           "category": "Local",
           "subcategory": null,
@@ -496,7 +996,8 @@
           "creator": null,
           "licence": null,
           "subjects": [],
-          "width": null, "height": null,
+          "width": null,
+          "height": null,
           "durationSeconds": null,
           "sizeBytes": 780000000,
           "codec": null,
@@ -506,67 +1007,195 @@
           "isLocal": true,
           "addedUtc": null,
           "tags": [
-            { "facet": "Source", "value": "Local" },
-            { "facet": "Category", "value": "Local" }
-          ]
+            {
+              "facet": "Source",
+              "value": "Local"
+            },
+            {
+              "facet": "Category",
+              "value": "Local"
+            }
+          ],
+          "sources": [
+            "local"
+          ],
+          "description": null
         }
       ]
     },
     {
       "type": "stateDelta",
-      "delayMs": 320,
+      "delayMs": 160,
       "clips": {
         "apple:7825C73A-A43F-4F8C-8C68-5D5C6D4F9A11": {
-          "inRotation": true, "pinned": false, "cached": true, "download": null, "health": "Ok", "isNew": false
+          "inRotation": true,
+          "pinned": false,
+          "cached": true,
+          "download": null,
+          "health": "Ok",
+          "isNew": false,
+          "lastPlayedUtc": "2026-10-13T14:39:45Z"
         },
         "apple:12E4F9B0-77D1-4B9A-9E2D-1A6F0C33DE02": {
-          "inRotation": true, "pinned": false, "cached": false, "download": null, "health": "Ok", "isNew": false
+          "inRotation": true,
+          "pinned": false,
+          "cached": false,
+          "download": null,
+          "health": "Ok",
+          "isNew": false,
+          "lastPlayedUtc": null
         },
         "apple:9F3D21AA-5C44-4E9B-8B9B-3E1EAB7C1004": {
-          "inRotation": false, "pinned": false, "cached": false, "download": null, "health": "Ok", "isNew": false
+          "inRotation": false,
+          "pinned": false,
+          "cached": false,
+          "download": null,
+          "health": "Ok",
+          "isNew": false,
+          "lastPlayedUtc": null
         },
         "ia:Fire7345s4kRes/Fire 66 - 45s - 4k res.mp4": {
-          "inRotation": true, "pinned": true, "cached": false,
-          "download": { "state": "Downloading", "fraction": 0.42, "bytesReceived": 35000000, "totalBytes": 83072197 },
-          "health": "Ok", "isNew": true
+          "inRotation": true,
+          "pinned": true,
+          "cached": false,
+          "download": {
+            "state": "Downloading",
+            "fraction": 0.42,
+            "bytesReceived": 35000000,
+            "totalBytes": 83072197,
+            "error": null
+          },
+          "health": "Ok",
+          "isNew": true,
+          "lastPlayedUtc": null
         },
         "ia:ThinSmoke974KRes/Thin Smoke 12 - 30s - 4k res.mp4": {
-          "inRotation": true, "pinned": false, "cached": true, "download": null, "health": "Ok", "isNew": false
+          "inRotation": true,
+          "pinned": false,
+          "cached": true,
+          "download": null,
+          "health": "Ok",
+          "isNew": false,
+          "lastPlayedUtc": "2026-10-12T20:55:58Z"
         },
         "ia:Water614KRes/Water 6 - 20s - 4k res.mp4": {
-          "inRotation": true, "pinned": false, "cached": false, "download": null, "health": "Unhealthy", "isNew": false
+          "inRotation": true,
+          "pinned": false,
+          "cached": false,
+          "download": null,
+          "health": "Unhealthy",
+          "isNew": false,
+          "lastPlayedUtc": null
         },
         "ia:pixabay-4006/aerial-canyon-4006.mp4": {
-          "inRotation": false, "pinned": false, "cached": false, "download": null, "health": "Ok", "isNew": false
+          "inRotation": false,
+          "pinned": true,
+          "cached": false,
+          "download": {
+            "state": "Failed",
+            "fraction": null,
+            "bytesReceived": 0,
+            "totalBytes": null,
+            "error": "HTTP 503 from archive.org"
+          },
+          "health": "Ok",
+          "isNew": false,
+          "lastPlayedUtc": null
         },
         "ia:pixabay-9981/forest-canopy-8k.mp4": {
-          "inRotation": true, "pinned": false, "cached": true, "download": null, "health": "Ok", "isNew": true
+          "inRotation": true,
+          "pinned": false,
+          "cached": true,
+          "download": null,
+          "health": "Ok",
+          "isNew": true,
+          "lastPlayedUtc": "2026-10-11T09:12:00Z"
         },
         "ia:scenic-letterbox/canyon-flight-237.mp4": {
-          "inRotation": false, "pinned": false, "cached": false, "download": null, "health": "Ok", "isNew": false
+          "inRotation": false,
+          "pinned": false,
+          "cached": false,
+          "download": null,
+          "health": "Ok",
+          "isNew": false,
+          "lastPlayedUtc": null
         },
         "nasa:expedition65": {
-          "inRotation": true, "pinned": true, "cached": true, "download": null, "health": "Ok", "isNew": false
+          "inRotation": true,
+          "pinned": true,
+          "cached": true,
+          "download": null,
+          "health": "Ok",
+          "isNew": false,
+          "lastPlayedUtc": "2026-10-10T18:30:00Z"
         },
         "nasa:earthviews": {
-          "inRotation": false, "pinned": false, "cached": false, "download": null, "health": "Ok", "isNew": false
+          "inRotation": false,
+          "pinned": false,
+          "cached": false,
+          "download": null,
+          "health": "Ok",
+          "isNew": false,
+          "lastPlayedUtc": null
         },
         "amazon:content-fireos8-grandteton": {
-          "inRotation": true, "pinned": false, "cached": false, "download": null, "health": "Ok", "isNew": false
+          "inRotation": true,
+          "pinned": false,
+          "cached": false,
+          "download": null,
+          "health": "Ok",
+          "isNew": false,
+          "lastPlayedUtc": null
         },
         "jetson:jc-0091": {
-          "inRotation": true, "pinned": false, "cached": false, "download": null, "health": "Ok", "isNew": false
+          "inRotation": true,
+          "pinned": false,
+          "cached": false,
+          "download": null,
+          "health": "Ok",
+          "isNew": false,
+          "lastPlayedUtc": null
         },
         "robin:rf-0042": {
-          "inRotation": false, "pinned": false, "cached": false, "download": null, "health": "Ok", "isNew": false
+          "inRotation": false,
+          "pinned": false,
+          "cached": false,
+          "download": null,
+          "health": "Ok",
+          "isNew": false,
+          "lastPlayedUtc": null
         },
         "local:D:\\Videos\\Aerial\\sunset-ridge.mp4": {
-          "inRotation": true, "pinned": false, "cached": false, "download": null, "health": "Ok", "isNew": false
+          "inRotation": true,
+          "pinned": false,
+          "cached": false,
+          "download": null,
+          "health": "Ok",
+          "isNew": false,
+          "lastPlayedUtc": null
         },
         "local:D:\\Videos\\Aerial\\city-timelapse.mp4": {
-          "inRotation": false, "pinned": false, "cached": false, "download": null, "health": "Ok", "isNew": false
+          "inRotation": false,
+          "pinned": false,
+          "cached": false,
+          "download": null,
+          "health": "Ok",
+          "isNew": false,
+          "lastPlayedUtc": null
         }
       }
+    },
+    {
+      "type": "cacheStats",
+      "delayMs": 170,
+      "pinnedBytes": 12000000000,
+      "rollingBytes": 7800000000,
+      "budgetBytes": 21474836480,
+      "freeDiskBytes": 90000000000,
+      "pinnedFiles": 2,
+      "rollingFiles": 3,
+      "pendingPins": 1,
+      "ownsPins": true
     }
   ]
 }

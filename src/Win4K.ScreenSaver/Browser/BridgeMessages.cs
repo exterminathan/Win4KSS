@@ -91,7 +91,11 @@ internal sealed record DownloadDto(DownloadState State, double? Fraction, long B
         status is null ? null : new(status.State, status.Fraction, status.BytesReceived, status.TotalBytes, status.Error);
 }
 
-internal sealed record ClipStateDto(bool InRotation, bool Pinned, bool Cached, DownloadDto? Download, string Health, bool IsNew)
+/// <param name="LastPlayedUtc">
+/// When the clip last played from the cache (or was stored in it), from the cache index; null
+/// when it is not cached, or is local. The browser's preview panel does not count as a play.
+/// </param>
+internal sealed record ClipStateDto(bool InRotation, bool Pinned, bool Cached, DownloadDto? Download, string Health, bool IsNew, DateTime? LastPlayedUtc)
 {
     public const string Ok = "Ok";
     public const string Unhealthy = "Unhealthy";

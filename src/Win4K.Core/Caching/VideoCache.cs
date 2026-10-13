@@ -246,7 +246,16 @@ public sealed class VideoCache : IDisposable
     /// The URL to hand to the player: a local file when cached, otherwise the origin so it
     /// streams. Wired into <see cref="Playback.PlaylistEngine.ResolveUrl"/>.
     /// </summary>
-    public string Resolve(Clip clip)
+    public string Resolve(Clip clip) => Resolve(clip, recordPlay: true);
+
+    /// <inheritdoc cref="Resolve(Clip)"/>
+    /// <param name="clip">The rendition to resolve.</param>
+    /// <param name="recordPlay">
+    /// Stamp the entry's <see cref="CacheEntry.LastPlayedUtc"/> (LRU order, and the clip
+    /// browser's "last played" sort). False for the browser's preview panel: looking at a clip
+    /// is not playing it.
+    /// </param>
+    public string Resolve(Clip clip, bool recordPlay)
     {
         if (clip.IsLocal)
             return clip.Url.LocalPath;
@@ -254,7 +263,8 @@ public sealed class VideoCache : IDisposable
         var path = PathFor(clip.Url);
         if (File.Exists(path))
         {
-            Touch(clip);
+            if (recordPlay)
+                Touch(clip);
             return path;
         }
 

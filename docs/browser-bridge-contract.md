@@ -1,6 +1,9 @@
 # Browser ↔ host bridge contract (Phase E)
 
-This is the interface the Phase E browser UI (WebView2 page) is built against. It
+This is the interface the Phase E browser UI (WebView2 page) is built against.
+**Integrated 2026-10-13:** both halves are on `main` and were run together against a copy
+of the real profile; where this doc and the code disagreed, the doc was brought in line
+(see "Integration changes" at the bottom). It
 reflects the **real C# types already in this repo** — Phases A–D and F are all landed
 on `main` (`7aae289`). Corrected 2026-10-13 against win4kscreensavers-67's actual
 implementation; earlier enum/field names in this doc (`Verifying`, `Canceled`,
@@ -65,7 +68,9 @@ embedded resources; either way paths are plain `/path/to/file.jpg`).
 3. After that, deltas are incremental. Send `ready` again only after a reload; the host then
    resends everything from scratch (reset page state on every `catalog`).
 4. Then post `panelRect` (and `selectClip` if something is selected) so the native preview
-   lands in the right place.
+   lands in the right place. The page posts `selectClip { key: null }` and a hidden
+   `panelRect` straight after `ready`: after a reload the host may still be playing what the
+   old page had selected, in a panel placed for the old layout.
 
 ## Host → page messages
 
@@ -121,7 +126,8 @@ source ids (`Rotation.SourcesOf`: `apple`, `aerial-manifests`, `archive-org`, `n
       "cached": true,
       "download": null,
       "health": "Ok",
-      "isNew": false
+      "isNew": false,
+      "lastPlayedUtc": "2026-10-13T14:39:45.9746252Z"
     },
     "ia:Fire7345s4kRes/Fire 66 - 45s - 4k res.mp4": {
       "inRotation": true,
@@ -129,7 +135,8 @@ source ids (`Rotation.SourcesOf`: `apple`, `aerial-manifests`, `archive-org`, `n
       "cached": false,
       "download": { "state": "Downloading", "fraction": 0.42, "bytesReceived": 35000000, "totalBytes": 83072197, "error": null },
       "health": "Ok",
-      "isNew": true
+      "isNew": true,
+      "lastPlayedUtc": null
     }
   }
 }
@@ -146,6 +153,13 @@ source ids (`Rotation.SourcesOf`: `apple`, `aerial-manifests`, `archive-org`, `n
 - `download` is null when no job exists (including once a job retires after `Done` or
   `Cancelled`); `error` is the failure text for `Failed`.
 - `inRotation` = `RotationKeys`; `pinned` = `KeptOffline`.
+- `lastPlayedUtc` (ISO-8601 UTC or null) drives the "Last played" sort. It is the latest
+  `CacheEntry.LastPlayedUtc` among the clip's cached renditions (matched by clip key, or by
+  file name for entries cached before index v2) — the cache index is the only play history
+  there is, so it is null for clips that are not cached and for local clips. Storing a file
+  also stamps it. The browser's own preview panel does **not** count as a play
+  (`VideoCache.Resolve(clip, recordPlay: false)`); a play by the saver reaches the page
+  through the index watcher.
 
 ### `previewReady`
 ```json
@@ -212,9 +226,9 @@ source ids (`Rotation.SourcesOf`: `apple`, `aerial-manifests`, `archive-org`, `n
 | `setAutoAdd` | `{ sourceId: string, value: bool, includeExisting?: bool }` | `Rotation.SetAutoAdd(settings, sourceId, value)`; `value: true` with `includeExisting: true` also calls `Rotation.SetInRotation(settings, Rotation.KeysOf(catalogue, sourceId), true)`. The UI's per-source toggle should prompt "also add the existing N clips?" (N = count of that source's clips not yet in rotation) and send `includeExisting` from the answer — don't silently default it either way. Host: `includeExisting` applies `value` to the existing clips both ways (`value: false` + `includeExisting: true` takes the source's clips out of the rotation). `sourceId` must be one of `availableSources`; answered with `settings` + `stateDelta`. |
 | `setPinned` | `{ keys: string[], value: bool }` | `PinManager.Pin`/`Unpin`; on `Pin`, host first runs `CanPin` and may reply with a one-off `pinRefused` message (see below) instead of a `stateDelta` |
 | `selectClip` | `{ key: string \| null }` | drives the native mpv preview panel the host positions over the detail pane's video rect (see `panelRect` below) |
-| `panelRect` | `{ x, y, width, height, visible: bool }` | page tells host where to position the native preview `HWND`, in **viewport** CSS pixels: `getBoundingClientRect()` of the video box, so scroll is already applied; sent on resize/scroll/select/layout change. The host converts with the WebView zoom and monitor DPI. The native panel draws **above** all page content, so send `visible: false` whenever anything (a menu, a modal, the settings panel) covers the video box or it scrolls out of view; the host hides the panel and pauses mpv |
+| `panelRect` | `{ x, y, width, height, visible: bool }` | page tells host where to position the native preview `HWND`, in **viewport** CSS pixels: `getBoundingClientRect()` of the video box, so scroll is already applied; sent on resize/scroll/select/layout change. The host converts with the WebView zoom and monitor DPI. The native panel draws **above** all page content, so send `visible: false` whenever anything (a menu, a modal, the settings panel) covers the video box or it scrolls out of view; the host hides the panel and pauses mpv. The page's rule (`updatePanel` in app.js): hidden while any `.overlay` (settings, confirm dialog) is open, while a toast, the bulk bar or the off-canvas sidebar intersects the box, while the box is not wholly inside the detail pane, and while the document is hidden. Native popups (`<select>` lists) are separate windows and sit above the panel anyway |
 | `requestPreviews` | `{ keys: string[], kinds: "Still"\|"Hover"\|"Both" }` | `MediaPreviewService.Request(keys, PreviewKind)` — `kinds` string maps 1:1 to the flag enum member name. Every preview already decided (Ready, Placeholder, Failed, Unavailable, Missing) is answered at once with `previewReady`; Pending ones arrive when done. Background fill also emits `previewReady` for clips never requested: keep them |
-| `cancelPreviews` | `{ keys: string[] }` | `MediaPreviewService.Cancel(keys)`, for cards scrolled away |
+| `cancelPreviews` | `{ keys: string[] }` | `MediaPreviewService.Cancel(keys)`, for cards scrolled away. It drops **both** kinds for a key, still and hover, queued or running; a cancelled job sends nothing and can be requested again. The page uses it when the pointer moves to another card before a pending hover clip is ready (and only once that card's still is decided) |
 | `saveSettings` | `{ patch: { ...partial of settings.values } }` | applied to `AppSettings` at once, written 500 ms after the last edit; answered with `settings`. Unknown/read-only fields are ignored. `cacheBudgetGb` is clamped to ≥ 1 (lowering it evicts now). `cacheDirectory` and `ffmpegPath` take effect next launch (a `notice` says so). `localFolders` (the full list) reloads the catalogue. `autoAddSources` (the full list) sets every source's auto-add. Shortcut fields write the `.lnk` files at once |
 | `refreshCatalogs` | `{}` | `CatalogRefresher.RefreshAsync` over every auto source; streams `refreshProgress` (below), then a new `catalog` + full `stateDelta` (settings re-prepared, so new clips from auto-add sources join the rotation). Ignored while one is running |
 | `startNow` | `{}` | asks Windows to start the configured saver (the `/now` path; honours the resume lock). A refusal comes back as a `notice` |
@@ -252,6 +266,12 @@ catalogue stays).
 
 ## Build/test approach on a machine without Windows
 
+*(Historical: how the page was first built. The harness is kept working — open
+`docs/browser-mock/dev.html` over HTTP from the repo root, e.g. `python -m http.server`
+then `/docs/browser-mock/dev.html`. It loads `index.html`'s `#app` markup and `app.js`
+straight from `src/…/Browser/ui/`, so there is one copy of the page, and `shim.js` replays
+`fixture.json` when the page posts `ready`, as the host does.)*
+
 1. Write `docs/browser-mock/fixture.json` — a `catalog` + initial `stateDelta` + `settings`
    + `cacheStats` message, covering **at least one clip per source** (apple, ia, nasa,
    amazon/aerial-manifests, local) and at least one of each state (pinned+downloading,
@@ -288,3 +308,25 @@ catalogue stays).
 - Page assets must be relative or `https://app.win4k/…`: no CDN, no network.
 - `/c` opens this window. It is single-instance: a second `/c` activates the open one.
 - Key order inside a received message is not meaningful (Chromium re-sorts posted JSON).
+
+## Integration changes (2026-10-13)
+
+What changed when the page and the host first ran together:
+
+- **Handshake:** the page installs its listener and posts `ready` only once every handler is
+  registered (it posted nothing before), then `selectClip null` + a hidden `panelRect`. Each
+  `catalog` clears all clip state (a full `stateDelta` follows); previews and the selection
+  survive for clips still present. A reload re-runs all of it.
+- **`stateDelta.lastPlayedUtc`** added (host), and the page's "Last played" sort uses it.
+- **The detail pane requests `Still` only** — mpv plays the real clip, so it no longer asks
+  ffmpeg for a hover clip of every clip clicked. Hover clips are for grid cards.
+- **The page now uses every page→host message:** `pickFolder` (Add folder…, cache folder
+  Browse…; typing a path still works), `openFolder` (cache, previews, data folder),
+  `retryDownloads`, `purgeCache` (after an in-page confirm), `cancelPreviews`, `setAutoAdd`
+  with `includeExisting` from an "also add/remove the existing N?" prompt (both directions),
+  shortcut/hotkey fields via `saveSettings`, and `log` for `window.onerror` and unhandled
+  rejections. `refreshProgress` shows in the toolbar and ends in a summary toast; `notice` is
+  a toast. `about` and `sources` from `settings` are rendered.
+- **Nothing overlaps the video box:** the detail pane's close button moved to a title row
+  above it, the preview is sticky at the top of the pane, and toasts moved to the bottom
+  right.

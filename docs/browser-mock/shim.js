@@ -4,23 +4,20 @@
 // (src/Win4K.ScreenSaver/Browser/ui/{index.html,app.css,app.js}) can be opened in any
 // browser and exercised without WebView2 or a compiled host. Loaded only by
 // docs/browser-mock/dev.html -- app.js never references this file and must keep working
-// unchanged when the real WebView2 bridge replaces it.
+// unchanged against the real WebView2 bridge.
 //
-// What it does:
-//   1. Implements the two methods app.js actually calls: chrome.webview.postMessage(obj)
-//      (page -> host) and chrome.webview.addEventListener('message', fn) (host -> page).
-//   2. Replays docs/browser-mock/fixture.json as a sequence of host -> page messages, in
-//      the order and with the delays the fixture specifies.
-//   3. Answers page -> host messages the way BrowserBridge.cs is specced to:
-//      requestPreviews synthesizes previewReady from the small sample files under
-//      docs/browser-mock/assets/ (round-robined, so every clip gets a plausible-looking
-//      still/hover); setPinned simulates PinManager's budget check against the fixture's
-//      cacheStats so the pinRefused path is reachable; setRotation/saveSettings/
-//      refreshCatalogs/startNow just log and, where it matters for the UI, update local
-//      mock state and push a follow-up stateDelta/settings/catalog message.
+// What it does, mirroring BrowserBridge.cs (docs/browser-bridge-contract.md):
+//   1. Implements chrome.webview.postMessage(obj) (page -> host) and
+//      chrome.webview.addEventListener('message', fn) (host -> page).
+//   2. Posts nothing until the page sends `ready`; then replays fixture.json (settings,
+//      catalog, a full stateDelta, cacheStats). A second `ready` (a reload) replays it again.
+//   3. Answers page -> host messages roughly as the host does: requestPreviews from the
+//      sample files under assets/, setPinned with a budget check (pinRefused) and a
+//      simulated download, setRotation/setAutoAdd/saveSettings with settings + stateDelta
+//      echoes, refreshCatalogs with refreshProgress then a catalog, pickFolder via prompt(),
+//      and a notice for the things a browser can't do (open a folder, start the saver).
 //
-// This file intentionally knows nothing about the DOM. It is pure message plumbing, same
-// as the real bridge is pure JSON plumbing over PostWebMessageAsJson/WebMessageReceived.
+// Pure message plumbing: this file knows nothing about the DOM.
 
 (function () {
   'use strict';
@@ -29,17 +26,20 @@
   const ASSETS = 'assets/';
   const STILLS = ['still-0.jpg', 'still-1.jpg', 'still-2.jpg', 'still-3.jpg'];
   const HOVERS = ['hover-a.mp4', 'hover-b.mp4'];
+  const GiB = 1024 * 1024 * 1024;
+  const UNKNOWN_BYTES = 350 * 1024 * 1024; // PinManager's guess for a clip of unknown size
 
   /** @type {Array<(ev: {data: any}) => void>} */
   const listeners = [];
 
-  // Mutable mock-side state, seeded from the fixture once it loads.
   const mock = {
-    settings: null,
+    fixture: null,
+    settings: null,      // settings message (values + sources + about)
     cacheStats: null,
-    clipsByKey: new Map(), // key -> catalog clip record
-    stateByKey: new Map(), // key -> stateDelta record
+    clipsByKey: new Map(),
+    stateByKey: new Map(),
     previewVersion: 0,
+    timers: [],
   };
 
   function log(direction, type, payload) {
@@ -48,10 +48,11 @@
   }
 
   function dispatch(message) {
-    log('host→page', message.type, message);
+    const copy = JSON.parse(JSON.stringify(message)); // the real bridge posts serialized JSON
+    log('host→page', copy.type, copy);
     for (const fn of listeners.slice()) {
       try {
-        fn({ data: message });
+        fn({ data: copy });
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error('[shim] a message listener threw', err);
@@ -59,9 +60,21 @@
     }
   }
 
-  function clipMatchesSourceId(clip, sourceId) {
-    return clip.sourceId === sourceId || (clip.sourceIds || []).includes(sourceId);
+  const later = (fn, ms) => mock.timers.push(setTimeout(fn, ms));
+  const notice = (level, text) => dispatch({ type: 'notice', level, text });
+
+  function postSettings() {
+    const ids = mock.settings.values.availableSources;
+    const auto = new Set(mock.settings.values.autoAddSources);
+    for (const s of mock.settings.sources) {
+      s.autoAdd = auto.has(s.id);
+      s.clipCount = Array.from(mock.clipsByKey.values()).filter((c) => (c.sources || []).includes(s.id)).length;
+    }
+    mock.settings.sources.sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id));
+    dispatch(Object.assign({ type: 'settings' }, mock.settings));
   }
+
+  function postStats() { dispatch(Object.assign({ type: 'cacheStats' }, mock.cacheStats)); }
 
   function randomAsset(list, key) {
     // Deterministic per key, so reloading the page doesn't shuffle which sample a card gets.
@@ -71,65 +84,76 @@
   }
 
   function placeholderColorFor(category) {
-    // Mirrors MediaPreviewService.PlaceholderColor closely enough for a dev harness: a
-    // stable, muted, dark-enough-for-white-text tint keyed by category name.
+    // A stable, muted tint per category, like MediaPreviewService.PlaceholderColor.
     const name = (category || 'Other').toLowerCase();
     let hash = 2166136261;
-    for (let i = 0; i < name.length; i++) {
-      hash = (hash ^ name.charCodeAt(i)) * 16777619;
-      hash >>>= 0;
-    }
-    const hue = (hash % 360) / 360;
-    return hslToHex(hue, 0.35, 0.3);
-  }
-
-  function hslToHex(h, s, l) {
-    function channel(t) {
+    for (let i = 0; i < name.length; i++) { hash = ((hash ^ name.charCodeAt(i)) * 16777619) >>> 0; }
+    const h = (hash % 360) / 360, s = 0.35, l = 0.3;
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
+    const ch = (t) => {
       t = ((t % 1) + 1) % 1;
-      const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-      const p = 2 * l - q;
-      if (t < 1 / 6) return p + (q - p) * 6 * t;
-      if (t < 0.5) return q;
-      if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
-      return p;
-    }
-    const toByte = (v) => Math.round(Math.max(0, Math.min(1, v)) * 255);
-    const r = toByte(channel(h + 1 / 3));
-    const g = toByte(channel(h));
-    const b = toByte(channel(h - 1 / 3));
-    return `#${[r, g, b].map((x) => x.toString(16).padStart(2, '0')).join('')}`;
+      const v = t < 1 / 6 ? p + (q - p) * 6 * t : t < 0.5 ? q : t < 2 / 3 ? p + (q - p) * (2 / 3 - t) * 6 : p;
+      return Math.round(Math.max(0, Math.min(1, v)) * 255).toString(16).padStart(2, '0');
+    };
+    return `#${ch(h + 1 / 3)}${ch(h)}${ch(h - 1 / 3)}`;
   }
 
   function sendPreviewReady(key, kind) {
     const clip = mock.clipsByKey.get(key);
     const color = placeholderColorFor(clip ? clip.category : null);
-    const caps = mock.settings && mock.settings.previewCapabilities;
-    const ffmpegAvailable = !caps || caps.ffmpegAvailable !== false;
-
-    if (kind === 'Hover' && !ffmpegAvailable) {
+    const caps = mock.settings.values.previewCapabilities || {};
+    if (kind === 'Hover' && caps.ffmpegAvailable === false) {
       dispatch({ type: 'previewReady', key, kind, status: 'Unavailable', url: null, placeholderColor: color });
       return;
     }
-
     mock.previewVersion += 1;
     const file = kind === 'Hover' ? randomAsset(HOVERS, key) : randomAsset(STILLS, key);
-    const url = `${ASSETS}${file}?v=${mock.previewVersion}`;
-    dispatch({ type: 'previewReady', key, kind, status: 'Ready', url, placeholderColor: color });
+    dispatch({ type: 'previewReady', key, kind, status: 'Ready', url: `${ASSETS}${file}?v=${mock.previewVersion}`, placeholderColor: color });
   }
 
   function mergeStateDelta(partial) {
+    const full = {};
     for (const [key, patch] of Object.entries(partial)) {
-      const current = mock.stateByKey.get(key) || {};
-      mock.stateByKey.set(key, Object.assign({}, current, patch));
+      const next = Object.assign({}, mock.stateByKey.get(key) || {}, patch);
+      mock.stateByKey.set(key, next);
+      full[key] = next; // the host always sends whole clip states
     }
-    dispatch({ type: 'stateDelta', clips: partial });
+    if (Object.keys(full).length) dispatch({ type: 'stateDelta', clips: full });
+  }
+
+  const estimate = (key) => (mock.clipsByKey.get(key) || {}).sizeBytes || UNKNOWN_BYTES;
+  const keysOfSource = (sourceId) => Array.from(mock.clipsByKey.values()).filter((c) => (c.sources || []).includes(sourceId)).map((c) => c.key);
+
+  function simulateDownload(key) {
+    const total = estimate(key);
+    let fraction = 0;
+    const step = () => {
+      const st = mock.stateByKey.get(key);
+      if (!st || !st.pinned) return;
+      fraction = Math.min(1, fraction + 0.08 + Math.random() * 0.1);
+      if (fraction >= 1) {
+        mergeStateDelta({ [key]: { cached: true, download: null, lastPlayedUtc: new Date().toISOString() } });
+        mock.cacheStats.pendingPins = Math.max(0, mock.cacheStats.pendingPins - 1);
+        mock.cacheStats.pinnedFiles += 1;
+        postStats();
+        return;
+      }
+      mergeStateDelta({ [key]: { download: { state: 'Downloading', fraction, bytesReceived: Math.round(total * fraction), totalBytes: total, error: null } } });
+      later(step, 250);
+    };
+    later(step, 400);
   }
 
   // ---- page -> host --------------------------------------------------------------------
 
   function handlePageMessage(msg) {
     log('page→host', msg.type, msg);
+    const values = mock.settings && mock.settings.values;
     switch (msg.type) {
+      case 'ready':
+        replay();
+        break;
+
       case 'setRotation': {
         const patch = {};
         for (const key of msg.keys) patch[key] = { inRotation: !!msg.value };
@@ -138,142 +162,173 @@
       }
 
       case 'setAutoAdd': {
-        // Mirrors Rotation.SetAutoAdd: toggles membership in settings.autoAddSources, and
-        // when turning it on with includeExisting also puts every existing matching clip
-        // that isn't already in rotation into rotation (Rotation.SetInRotation over
-        // Rotation.KeysOf(catalogue, sourceId)).
-        const current = new Set(mock.settings.autoAddSources || []);
+        const current = new Set(values.autoAddSources || []);
         if (msg.value) current.add(msg.sourceId); else current.delete(msg.sourceId);
-        mock.settings.autoAddSources = Array.from(current);
-        dispatch({ type: 'settings', values: mock.settings });
-
-        if (msg.value && msg.includeExisting) {
+        values.autoAddSources = Array.from(current).sort();
+        postSettings();
+        if (msg.includeExisting) {
           const patch = {};
-          for (const [key, clip] of mock.clipsByKey) {
-            if (!clipMatchesSourceId(clip, msg.sourceId)) continue;
-            if (mock.stateByKey.get(key)?.inRotation) continue;
-            patch[key] = { inRotation: true };
-          }
-          if (Object.keys(patch).length > 0) mergeStateDelta(patch);
+          for (const key of keysOfSource(msg.sourceId)) patch[key] = { inRotation: !!msg.value };
+          mergeStateDelta(patch);
         }
         break;
       }
 
       case 'setPinned': {
-        const UNKNOWN_BYTES = 350 * 1024 * 1024;
-        const estimate = (key) => (mock.clipsByKey.get(key) || {}).sizeBytes || UNKNOWN_BYTES;
-
         if (!msg.value) {
           const patch = {};
           for (const key of msg.keys) {
-            const wasPinned = mock.stateByKey.get(key)?.pinned;
-            const wasCached = mock.stateByKey.get(key)?.cached;
-            patch[key] = { pinned: false, download: null };
-            if (wasPinned) {
+            const st = mock.stateByKey.get(key) || {};
+            if (st.pinned) {
               mock.cacheStats.pinnedBytes = Math.max(0, mock.cacheStats.pinnedBytes - estimate(key));
-              if (wasCached) mock.cacheStats.rollingBytes += estimate(key);
+              if (st.cached) mock.cacheStats.rollingBytes += estimate(key);
             }
+            patch[key] = { pinned: false, download: null };
           }
           mergeStateDelta(patch);
-          dispatch(mock.cacheStats);
+          postStats();
           break;
         }
 
-        // Fake PinManager.CanPin: everything already pinned, plus the newly requested keys
-        // that are not already pinned, each at sizeBytes if known else PinManager's
-        // UnknownClipBytes guess, must fit the budget.
+        // PinManager.CanPin: what is pinned already, plus the new keys, must fit the budget.
         let required = mock.cacheStats.pinnedBytes;
-        for (const key of new Set(msg.keys)) {
-          if (mock.stateByKey.get(key)?.pinned) continue;
-          required += estimate(key);
-        }
-
+        for (const key of new Set(msg.keys)) if (!(mock.stateByKey.get(key) || {}).pinned) required += estimate(key);
         const budget = mock.cacheStats.budgetBytes;
         if (required > budget) {
-          const requiredGb = Math.ceil(required / (1024 * 1024 * 1024));
-          const budgetGb = Math.round(budget / (1024 * 1024 * 1024));
           dispatch({
-            type: 'pinRefused',
-            keys: msg.keys,
-            requiredGb,
-            budgetGb,
-            shortfallGb: Math.max(0, requiredGb - budgetGb),
+            type: 'pinRefused', keys: msg.keys,
+            requiredGb: Math.ceil(required / GiB), budgetGb: values.cacheBudgetGb,
+            shortfallGb: Math.ceil(((required - budget) / GiB) * 10) / 10,
+            requiredBytes: required, budgetBytes: budget, shortfallBytes: required - budget,
           });
           break;
         }
 
         const patch = {};
         for (const key of msg.keys) {
-          if (!mock.stateByKey.get(key)?.pinned) mock.cacheStats.pinnedBytes += estimate(key);
-          patch[key] = {
-            pinned: true,
-            download: { state: 'Downloading', fraction: 0, bytesReceived: 0, totalBytes: estimate(key) },
-          };
+          const st = mock.stateByKey.get(key) || {};
+          if (st.pinned) continue;
+          mock.cacheStats.pinnedBytes += estimate(key);
+          if (st.cached) { patch[key] = { pinned: true }; continue; }
+          mock.cacheStats.pendingPins += 1;
+          patch[key] = { pinned: true, download: { state: 'Queued', fraction: null, bytesReceived: 0, totalBytes: null, error: null } };
+          simulateDownload(key);
         }
         mergeStateDelta(patch);
-        dispatch(mock.cacheStats);
-
-        // Simulate the download finishing a couple of seconds later.
-        for (const key of msg.keys) {
-          setTimeout(() => mergeStateDelta({ [key]: { pinned: true, cached: true, download: null } }), 2000 + Math.random() * 2000);
-        }
+        postStats();
         break;
       }
 
       case 'selectClip':
-        // No native preview panel in a plain browser; app.js already knows not to expect
-        // one outside WebView2. Nothing to simulate.
-        break;
-
       case 'panelRect':
-        // Ditto -- logged above, nothing else to do.
-        break;
+      case 'cancelPreviews':
+        break; // no native panel and no preview workers in a plain browser
 
       case 'requestPreviews': {
         const kinds = msg.kinds === 'Both' ? ['Still', 'Hover'] : [msg.kinds];
         for (const key of msg.keys) {
           for (const kind of kinds) {
-            // A small random delay so the UI's "Pending" state is actually visible.
-            setTimeout(() => sendPreviewReady(key, kind), 80 + Math.random() * 260);
+            // Stills answer at once; hover clips take a moment, like ffmpeg.
+            later(() => sendPreviewReady(key, kind), kind === 'Hover' ? 600 + Math.random() * 600 : 30 + Math.random() * 200);
           }
         }
         break;
       }
 
       case 'saveSettings': {
-        Object.assign(mock.settings, msg.patch);
-        dispatch({ type: 'settings', values: mock.settings });
+        const p = msg.patch || {};
+        for (const [k, v] of Object.entries(p)) {
+          if (k === 'previewCapabilities' || k === 'availableSources' || !(k in values)) continue;
+          if (k === 'cacheBudgetGb') {
+            values.cacheBudgetGb = Math.max(1, Number(v));
+            mock.cacheStats.budgetBytes = Math.round(values.cacheBudgetGb * GiB);
+            postStats();
+          } else if (k === 'hotkey') {
+            const parts = String(v || '').split('+').filter(Boolean);
+            const key = parts.find((x) => !/^(ctrl|control|alt|shift)$/i.test(x));
+            if (parts.length && (!key || parts.length < 2)) { notice('warning', `"${v}" is not a usable hotkey: it needs Ctrl, Alt or Shift plus a key.`); continue; }
+            values.hotkey = parts.length
+              ? ['CTRL', 'ALT', 'SHIFT'].filter((m) => parts.some((x) => x.toUpperCase().startsWith(m.slice(0, 4))))
+                .concat([key.replace(/^Key/, '').replace(/^Digit/, '').toUpperCase()]).join('+')
+              : null;
+          } else {
+            values[k] = v;
+          }
+          if (k === 'cacheDirectory' || k === 'ffmpegPath') notice('info', `The new ${k === 'ffmpegPath' ? 'ffmpeg path' : 'cache folder'} is used the next time the browser starts.`);
+        }
+        postSettings();
         break;
       }
 
-      case 'purgeCache': {
-        // Not in docs/browser-bridge-contract.md's page→host table as written -- see the
-        // TODO(local) next to app.js's "Purge rolling cache" button. Simulated here anyway so
-        // the control is exercisable in the dev harness: VideoCache.PurgeUnpinned() deletes
-        // every non-pinned cached file, so rollingBytes drops to zero and those clips' `cached`
-        // flips false.
-        const patch = {};
-        for (const [key, state] of mock.stateByKey) {
-          if (state.cached && !state.pinned) patch[key] = { cached: false };
-        }
-        if (Object.keys(patch).length > 0) mergeStateDelta(patch);
-        mock.cacheStats.rollingBytes = 0;
-        dispatch(mock.cacheStats);
+      case 'pickFolder': {
+        // eslint-disable-next-line no-alert
+        const folder = window.prompt(`[dev harness] stands in for the native folder dialog (${msg.purpose}):`, 'D:\\Videos\\Aerial');
+        if (!folder) break;
+        if (msg.purpose === 'localFolder') values.localFolders = (values.localFolders || []).concat([folder]);
+        else values.cacheDirectory = folder;
+        postSettings();
         break;
       }
 
       case 'refreshCatalogs': {
-        // Real host streams `refreshProgress` (shape not finalized) then a fresh `catalog`.
-        // The mock just waits a beat and re-sends the same catalogue.
-        setTimeout(() => {
+        const sources = ['archive-org', 'nasa', 'aerial-manifests'];
+        let done = 0;
+        const tick = () => {
+          done += 1;
+          if (done <= 6) {
+            const sourceId = sources[done % sources.length];
+            dispatch({ type: 'refreshProgress', running: true, sourceId, stage: 'items', done: done * 17, total: 102, ok: null, sources: null, error: null });
+            later(tick, 300);
+            return;
+          }
+          dispatch({
+            type: 'refreshProgress', running: false, sourceId: null, stage: null, done: null, total: null, ok: true, error: null,
+            sources: sources.map((s) => ({ sourceId: s, succeeded: true, assetCount: keysOfSource(s).length, added: 0, removed: 0, error: null })),
+          });
           dispatch({ type: 'catalog', clips: Array.from(mock.clipsByKey.values()) });
-        }, 1200);
+          const full = {};
+          for (const [k, v] of mock.stateByKey) full[k] = v;
+          dispatch({ type: 'stateDelta', clips: full });
+          postStats();
+          postSettings();
+        };
+        later(tick, 200);
+        break;
+      }
+
+      case 'purgeCache': {
+        const patch = {};
+        let n = 0;
+        for (const [key, st] of mock.stateByKey) if (st.cached && !st.pinned) { patch[key] = { cached: false, lastPlayedUtc: null }; n++; }
+        mergeStateDelta(patch);
+        mock.cacheStats.rollingBytes = 0;
+        mock.cacheStats.rollingFiles = 0;
+        postStats();
+        notice('info', `Deleted ${n} cached clip(s). Clips kept offline were not touched.`);
+        break;
+      }
+
+      case 'retryDownloads': {
+        for (const [key, st] of mock.stateByKey) {
+          if (st.download && st.download.state === 'Failed') {
+            mergeStateDelta({ [key]: { download: { state: 'Queued', fraction: null, bytesReceived: 0, totalBytes: null, error: null } } });
+            simulateDownload(key);
+          }
+        }
         break;
       }
 
       case 'startNow':
+        notice('info', '[dev harness] the real host would start the screen saver now.');
+        break;
+
+      case 'openFolder':
+        notice('info', `[dev harness] the real host would open the ${msg.which} folder in Explorer.`);
+        break;
+
+      case 'log':
         // eslint-disable-next-line no-console
-        console.log('[shim] startNow: would call NativeMethods.StartConfiguredScreenSaver() on the real host');
+        (msg.level === 'error' ? console.error : console.log)('[shim] page log:', msg.text);
         break;
 
       default:
@@ -284,42 +339,58 @@
 
   // ---- bootstrap ------------------------------------------------------------------------
 
-  function loadFixture() {
+  function seed(fixture) {
+    mock.clipsByKey.clear();
+    mock.stateByKey.clear();
+    for (const message of fixture.messages) {
+      if (message.type === 'settings') mock.settings = JSON.parse(JSON.stringify({ values: message.values, sources: message.sources, about: message.about }));
+      if (message.type === 'cacheStats') { const { type, delayMs, ...rest } = message; mock.cacheStats = Object.assign({}, rest); }
+      if (message.type === 'catalog') for (const clip of message.clips) mock.clipsByKey.set(clip.key, clip);
+      if (message.type === 'stateDelta') for (const [key, st] of Object.entries(message.clips)) mock.stateByKey.set(key, Object.assign({}, st));
+    }
+  }
+
+  /** Answers `ready`: everything from scratch, as the host does after a (re)load. */
+  function replay() {
+    for (const t of mock.timers) clearTimeout(t);
+    mock.timers = [];
+    const go = (fixture) => {
+      if (!mock.fixture) { mock.fixture = fixture; seed(fixture); }
+      for (const message of fixture.messages) {
+        later(() => {
+          if (message.type === 'settings') postSettings();
+          else if (message.type === 'cacheStats') postStats();
+          else if (message.type === 'stateDelta') {
+            const full = {};
+            for (const [k, v] of mock.stateByKey) full[k] = v;
+            dispatch({ type: 'stateDelta', clips: full });
+          } else {
+            const { delayMs, ...rest } = message;
+            dispatch(rest);
+          }
+        }, message.delayMs || 0);
+      }
+    };
+    if (mock.fixture) { go(mock.fixture); return; }
     fetch(FIXTURE_URL)
       .then((r) => {
         if (!r.ok) throw new Error(`fixture fetch failed: HTTP ${r.status}`);
         return r.json();
       })
-      .then((fixture) => {
-        for (const message of fixture.messages) {
-          const { delayMs, ...rest } = message;
-          setTimeout(() => {
-            if (rest.type === 'settings') mock.settings = rest.values;
-            if (rest.type === 'cacheStats') mock.cacheStats = rest;
-            if (rest.type === 'catalog') {
-              for (const clip of rest.clips) mock.clipsByKey.set(clip.key, clip);
-            }
-            if (rest.type === 'stateDelta') {
-              for (const [key, state] of Object.entries(rest.clips)) mock.stateByKey.set(key, state);
-            }
-            dispatch(rest);
-          }, delayMs || 0);
-        }
-      })
+      .then(go)
       .catch((err) => {
         // eslint-disable-next-line no-console
-        console.error('[shim] could not load fixture.json -- serve this folder over HTTP ' +
-          '(fetch() of a local file fails under file:// in most browsers). ' +
-          'e.g. `npx http-server docs/browser-mock` or `python -m http.server` from that folder.', err);
+        console.error('[shim] could not load fixture.json -- serve the repo over HTTP ' +
+          '(e.g. `python -m http.server` from the repo root, then open /docs/browser-mock/dev.html).', err);
       });
   }
 
   window.chrome = window.chrome || {};
   window.chrome.webview = {
     postMessage(obj) {
-      // WebView2's real postMessage accepts either a string or a JSON-able value; app.js
-      // always sends a plain object, same as PostWebMessageAsJson expects on the way back.
-      handlePageMessage(typeof obj === 'string' ? JSON.parse(obj) : obj);
+      // Async, like the real one: WebMessageReceived fires on the host's next turn.
+      const msg = typeof obj === 'string' ? JSON.parse(obj) : JSON.parse(JSON.stringify(obj));
+      setTimeout(() => handlePageMessage(msg), 0);
     },
     addEventListener(type, fn) {
       if (type === 'message') listeners.push(fn);
@@ -330,6 +401,4 @@
       if (i >= 0) listeners.splice(i, 1);
     },
   };
-
-  loadFixture();
 })();

@@ -9,21 +9,21 @@
 // never references the shim and must not know it exists.
 //
 // Section map:
-//   1. Bridge            -- thin wrapper over window.chrome.webview
-//   2. Constants          -- facet order, state-tag strings, display-name tables
+//   1. Bridge            -- thin wrapper over window.chrome.webview, + page error logging
+//   2. Constants          -- facet order, state-tag strings
 //   3. Store              -- all mutable client state, in one place
 //   4. Tag / filter model -- combining catalogue tags with live state, faceted counts
 //   5. Sorting
 //   6. Grid rendering
 //   7. Hover preview
-//   8. Detail pane
+//   8. Detail pane + the native preview panel (panelRect)
 //   9. Selection / bulk bar
-//  10. Sidebar (facets + search)
-//  11. Toolbar (sort, view size, refresh, start now)
+//  10. Sidebar (facets)
+//  11. Toolbar (search, sort, view size, refresh, start now)
 //  12. Settings panel
-//  13. Toast
+//  13. Toasts and the confirm dialog
 //  14. Host -> page message handlers
-//  15. Init
+//  15. Init (ends by posting `ready`)
 
 (function () {
   'use strict';
@@ -39,34 +39,62 @@
       return window.chrome && window.chrome.webview;
     }
 
-    if (webview()) {
-      webview().addEventListener('message', (e) => dispatch(e.data));
-    } else {
-      // eslint-disable-next-line no-console
-      console.warn('[app] window.chrome.webview is not present -- running with no host. ' +
-        'Open this page through docs/browser-mock/dev.html for a working mock, or inside WebView2.');
-    }
-
     function dispatch(msg) {
       if (!msg || typeof msg.type !== 'string') return;
       const fn = handlers.get(msg.type);
-      if (fn) fn(msg);
-      // Unknown message types (e.g. a future refreshProgress shape) are fine to ignore.
+      if (!fn) return; // unknown types are fine to ignore
+      try {
+        fn(msg);
+      } catch (err) {
+        reportError(`handling ${msg.type}: ${err && err.stack ? err.stack : err}`);
+      }
+    }
+
+    function send(type, payload) {
+      const wv = webview();
+      if (!wv) {
+        // eslint-disable-next-line no-console
+        console.warn('[app] no host to send to', type, payload);
+        return;
+      }
+      wv.postMessage(Object.assign({ type }, payload));
+    }
+
+    /** Page errors go to win4k.log as "Page: ..." (the contract's `log` message). */
+    function reportError(text) {
+      // eslint-disable-next-line no-console
+      console.error('[app]', text);
+      send('log', { level: 'error', text: String(text) });
     }
 
     return {
       on(type, fn) { handlers.set(type, fn); },
-      send(type, payload) {
+      send,
+      reportError,
+      log(level, text) { send('log', { level, text: String(text) }); },
+      /** Install the listener, then say `ready`: the host posts nothing before it. */
+      connect() {
         const wv = webview();
         if (!wv) {
           // eslint-disable-next-line no-console
-          console.warn('[app] no host to send to', type, payload);
+          console.warn('[app] window.chrome.webview is not present -- running with no host. ' +
+            'Open this page through docs/browser-mock/dev.html for a working mock, or inside WebView2.');
           return;
         }
-        wv.postMessage(Object.assign({ type }, payload));
+        wv.addEventListener('message', (e) => dispatch(e.data));
+        send('ready', {});
       },
     };
   })();
+
+  window.addEventListener('error', (e) => {
+    Bridge.reportError(`${e.message} at ${e.filename || '?'}:${e.lineno || 0}:${e.colno || 0}` +
+      (e.error && e.error.stack ? `\n${e.error.stack}` : ''));
+  });
+  window.addEventListener('unhandledrejection', (e) => {
+    const r = e.reason;
+    Bridge.reportError(`unhandled rejection: ${r && r.stack ? r.stack : r}`);
+  });
 
   // ======================================================================================
   // 2. Constants
@@ -84,18 +112,13 @@
     DynamicRange: 'Dynamic range', Duration: 'Duration', Codec: 'Codec', Licence: 'Licence', State: 'State',
   };
 
+  // Facets with long tails show this many values until "Show all" is clicked.
+  const FACET_PREVIEW_COUNT = 12;
+
   // Mirrors TagBuilder.Values -- the live State facet's exact strings.
   const STATE_VALUES = {
     IN_ROTATION: 'In rotation', KEPT_OFFLINE: 'Kept offline', CACHED: 'Cached',
     DOWNLOADING: 'Downloading', NEW: 'New', UNHEALTHY: 'Unhealthy',
-  };
-
-  // Mirrors TagBuilder.SourceName, keyed by the *last* ':'-delimited segment of a source id
-  // (availableSources mixes bare ids like "apple" with compound ones like
-  // "aerial-manifests:apple-tvos26"; the segment after the colon is what SourceName switches on).
-  const SOURCE_DISPLAY_NAMES = {
-    apple: 'Apple', 'apple-tvos26': 'Apple', 'archive-org': 'Internet Archive', nasa: 'NASA',
-    'amazon-fireos8': 'Amazon', 'jetson-creative': 'Jetson', 'robin-fourcade': 'Robin', local: 'Local',
   };
 
   const RESOLUTION_RANK = { '1080p': 1, '4K': 2, '5K+': 3, '8K': 4 };
@@ -107,14 +130,18 @@
   const Store = {
     clips: new Map(),          // key -> catalog clip record
     order: [],                 // keys, catalog arrival order (stable fallback sort)
-    state: new Map(),          // key -> stateDelta record (inRotation, pinned, cached, download, health, isNew)
+    state: new Map(),          // key -> stateDelta record (inRotation, pinned, cached, download, health, isNew, lastPlayedUtc)
     preview: new Map(),        // key -> { still: {status,url,color}, hover: {status,url,color} }
     settings: null,            // settings.values, or null until the first `settings` message
+    sources: [],               // settings.sources: [{ id, name, clipCount, autoAdd }]
+    about: null,               // settings.about
     cacheStats: null,          // cacheStats message, or null until the first one arrives
+    catalogLoaded: false,
 
     visible: [],               // keys passing the current filters, sorted
     filters: { search: '', facets: new Map() }, // facetName -> Set<value>
     collapsedFacets: new Set(),
+    expandedFacets: new Set(), // long facets showing every value
     sort: { field: 'addedUtc', dir: 'desc' },
     viewSize: 'm',
 
@@ -130,9 +157,8 @@
   // ======================================================================================
 
   /** Live State-facet tags for one clip, derived from its stateDelta record. Mirrors
-   *  TagBuilder.Build's State block exactly -- including trusting `isNew` as given; the
-   *  page never re-derives "new" from addedUtc itself (that's TagBuilder.IsNew's job,
-   *  server-side, per docs/browser-bridge-contract.md). */
+   *  TagBuilder.Build's State block -- including trusting `isNew` as given; the page never
+   *  re-derives "new" itself (that's TagBuilder.IsNew's job, host-side). */
   function stateTags(state) {
     if (!state) return [];
     const tags = [];
@@ -151,30 +177,42 @@
     return (clip.tags || []).concat(stateTags(Store.state.get(key)));
   }
 
+  /** The part of a clip's state the State facet and filters depend on. */
+  function stateFlags(state) {
+    if (!state) return '';
+    return [state.inRotation, state.pinned, state.cached, state.health, state.isNew,
+      !!(state.download && state.download.state === 'Downloading')].join('|');
+  }
+
+  function searchText(clip) {
+    if (clip._search === undefined) {
+      clip._search = [clip.title, clip.category, clip.subcategory, clip.creator, clip.description]
+        .concat(clip.subjects || [])
+        .concat((clip.captions || []).map((c) => c.text))
+        .filter(Boolean)
+        .join(' \u0000 ')
+        .toLowerCase();
+    }
+    return clip._search;
+  }
+
   function matchesSearch(clip, text) {
-    if (!text) return true;
-    const haystack = [clip.title, clip.category, clip.subcategory, clip.creator]
-      .concat(clip.subjects || [])
-      .filter(Boolean)
-      .join(' \u0000 ')
-      .toLowerCase();
-    return haystack.includes(text);
+    return !text || searchText(clip).includes(text);
   }
 
   /** True if `key` satisfies every active facet filter except `excludeFacet` (OR within a
-   *  facet's selected values, AND across facets). Passing null/undefined applies all of them. */
-  function matchesFacetsExcept(key, excludeFacet) {
+   *  facet's selected values, AND across facets). Passing null applies all of them. */
+  function matchesFacetsExcept(tags, excludeFacet) {
     for (const [facet, values] of Store.filters.facets) {
       if (facet === excludeFacet || !values || values.size === 0) continue;
-      const tags = combinedTags(key).filter((t) => t.facet === facet);
-      if (!tags.some((t) => values.has(t.value))) return false;
+      if (!tags.some((t) => t.facet === facet && values.has(t.value))) return false;
     }
     return true;
   }
 
   function passesAllFilters(key) {
     const clip = Store.clips.get(key);
-    return !!clip && matchesSearch(clip, Store.filters.search) && matchesFacetsExcept(key, null);
+    return !!clip && matchesSearch(clip, Store.filters.search) && matchesFacetsExcept(combinedTags(key), null);
   }
 
   /** facet -> Map(value -> count), each counted against clips that pass every *other*
@@ -189,9 +227,10 @@
       if (!clip || !matchesSearch(clip, Store.filters.search)) continue;
       const tags = combinedTags(key);
       for (const facet of TAG_FACETS) {
-        if (!matchesFacetsExcept(key, facet)) continue;
+        if (!matchesFacetsExcept(tags, facet)) continue;
         const counts = result.get(facet);
-        const here = new Set(tags.filter((t) => t.facet === facet).map((t) => t.value));
+        const here = new Set();
+        for (const t of tags) if (t.facet === facet) here.add(t.value);
         for (const value of here) counts.set(value, (counts.get(value) || 0) + 1);
       }
     }
@@ -229,8 +268,8 @@
   }
 
   function cmpNullsLast(a, b, dir) {
-    const an = a === null || a === undefined;
-    const bn = b === null || b === undefined;
+    const an = a === null || a === undefined || Number.isNaN(a);
+    const bn = b === null || b === undefined || Number.isNaN(b);
     if (an && bn) return 0;
     if (an) return 1;
     if (bn) return -1;
@@ -239,42 +278,32 @@
     return 0;
   }
 
-  function compareKeys(aKey, bKey) {
-    const a = Store.clips.get(aKey);
-    const b = Store.clips.get(bKey);
-    const { field, dir } = Store.sort;
-    let av = null, bv = null;
-
+  function sortValue(key, field) {
+    const clip = Store.clips.get(key);
     switch (field) {
-      case 'title':
-        av = (a.title || '').toLowerCase(); bv = (b.title || '').toLowerCase(); break;
-      case 'durationSeconds':
-        av = a.durationSeconds; bv = b.durationSeconds; break;
-      case 'sizeBytes':
-        av = a.sizeBytes; bv = b.sizeBytes; break;
-      case 'resolution':
-        av = resolutionRank(a); bv = resolutionRank(b); break;
-      case 'addedUtc':
-        av = a.addedUtc ? Date.parse(a.addedUtc) : null; bv = b.addedUtc ? Date.parse(b.addedUtc) : null; break;
-      case 'source':
-        av = sourceDisplayName(a).toLowerCase(); bv = sourceDisplayName(b).toLowerCase(); break;
-      case 'lastPlayed':
-        // TODO(local): no last-played timestamp crosses the bridge -- CacheEntry.LastPlayedUtc
-        // (src/Win4K.Core/Caching/CacheIndex.cs) is host-only and isn't in the stateDelta/catalog
-        // contract. Falls back to stable catalogue order until/unless the contract grows a field
-        // for it. The sort dropdown still offers it since the plan asks for it explicitly.
-        return 0;
-      default:
-        return 0;
+      case 'title': return (clip.title || '').toLowerCase();
+      case 'durationSeconds': return clip.durationSeconds;
+      case 'sizeBytes': return clip.sizeBytes;
+      case 'resolution': return resolutionRank(clip);
+      case 'addedUtc': return clip.addedUtc ? Date.parse(clip.addedUtc) : null;
+      case 'source': return sourceDisplayName(clip).toLowerCase();
+      case 'lastPlayed': {
+        // stateDelta.lastPlayedUtc: from the cache index, so only cached clips have one.
+        const s = Store.state.get(key);
+        return s && s.lastPlayedUtc ? Date.parse(s.lastPlayedUtc) : null;
+      }
+      default: return null;
     }
-    return cmpNullsLast(av, bv, dir);
   }
 
   function recomputeVisible() {
-    const arr = [];
-    for (const key of Store.order) if (passesAllFilters(key)) arr.push(key);
-    arr.sort(compareKeys);
-    Store.visible = arr;
+    const { field, dir } = Store.sort;
+    const rows = [];
+    for (const key of Store.order) if (passesAllFilters(key)) rows.push({ key, v: sortValue(key, field) });
+    // Stable (Array.prototype.sort is), ties fall back to title then catalogue order.
+    rows.sort((a, b) => cmpNullsLast(a.v, b.v, dir) ||
+      (field !== 'title' ? cmpNullsLast(sortValue(a.key, 'title'), sortValue(b.key, 'title'), 'asc') : 0));
+    Store.visible = rows.map((r) => r.key);
   }
 
   // ======================================================================================
@@ -283,6 +312,7 @@
 
   const cardEls = new Map(); // key -> element, rebuilt alongside Store.visible
   let stillObserver = null;
+  let renderedVisible = [];  // the order the grid currently shows
 
   function esc(s) {
     return String(s === null || s === undefined ? '' : s).replace(/[&<>"']/g, (c) => ({
@@ -309,23 +339,25 @@
     return `${v.toFixed(v < 10 && i > 0 ? 1 : 0)} ${units[i]}`;
   }
 
+  function formatWhen(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? '' : d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+  }
+
   function tagValue(clip, facet) {
     const t = (clip.tags || []).find((tag) => tag.facet === facet);
     return t ? t.value : null;
   }
 
   function sourceDisplayName(clip) {
-    const fromTag = tagValue(clip, 'Source');
-    if (fromTag) return fromTag;
-    return sourceIdDisplayName(clip.sourceId);
+    return tagValue(clip, 'Source') || sourceName(clip.sourceId);
   }
 
-  /** Display name for a raw/compound source id ("apple", "aerial-manifests:apple-tvos26"). */
-  function sourceIdDisplayName(id) {
-    if (!id) return '';
-    const segment = id.includes(':') ? id.slice(id.indexOf(':') + 1) : id;
-    const name = SOURCE_DISPLAY_NAMES[segment] || segment;
-    return id.startsWith('aerial-manifests:') ? `${name} (Aerial Manifests)` : name;
+  /** Display name of a rotation source id (settings.sources), else the id itself. */
+  function sourceName(id) {
+    const s = Store.sources.find((x) => x.id === id);
+    return s ? s.name : (id || '');
   }
 
   function subLine(clip) {
@@ -371,6 +403,11 @@
     return el;
   }
 
+  function downloadPercent(download) {
+    return download && download.fraction !== null && download.fraction !== undefined
+      ? Math.round(download.fraction * 100) : null;
+  }
+
   /** Dynamic bits only: selection, active, state icons, download ring. Called on every
    *  stateDelta for a changed key and on selection changes -- must stay cheap. */
   function updateCardVisuals(key, elOpt) {
@@ -383,23 +420,26 @@
 
     const icons = [];
     if (state.inRotation) icons.push('<span class="state-icon rotation" title="In rotation">\u25CF</span>');
-    if (state.pinned) icons.push('<span class="state-icon pin" title="Kept offline">\u2B07</span>');
-    if (state.health === 'Unhealthy') icons.push('<span class="state-icon unhealthy" title="Unhealthy">!</span>');
+    if (state.pinned) icons.push(`<span class="state-icon pin" title="${state.cached ? 'Kept offline' : 'Kept offline (not downloaded yet)'}">\u2B07</span>`);
+    if (state.health === 'Unhealthy') icons.push('<span class="state-icon unhealthy" title="Failed to play in several sessions">!</span>');
     if (state.isNew) icons.push('<span class="state-icon new" title="New">\u2605</span>');
     const iconsEl = el.querySelector('.state-icons');
-    if (iconsEl) iconsEl.innerHTML = icons.join('');
+    const iconsHtml = icons.join('');
+    if (iconsEl && iconsEl.innerHTML !== iconsHtml) iconsEl.innerHTML = iconsHtml;
 
     const thumb = el.querySelector('.thumb');
     let ring = thumb.querySelector('.progress-ring');
-    if (state.download && state.download.state === 'Downloading') {
+    const dl = state.download;
+    if (dl && (dl.state === 'Downloading' || dl.state === 'Queued' || dl.state === 'Waiting')) {
       if (!ring) { ring = document.createElement('div'); ring.className = 'progress-ring'; thumb.appendChild(ring); }
-      const pct = state.download.fraction !== null && state.download.fraction !== undefined
-        ? Math.round(state.download.fraction * 100) : 0;
+      const pct = downloadPercent(dl) || 0;
       ring.style.setProperty('--pct', String(pct));
-      ring.title = `${pct}%`;
+      ring.classList.toggle('is-queued', dl.state !== 'Downloading');
+      ring.title = dl.state === 'Downloading' ? `Downloading: ${pct}%` : dl.state === 'Queued' ? 'Queued' : 'Waiting for another process';
     } else if (ring) {
       ring.remove();
     }
+    el.classList.toggle('is-failed', !!(dl && dl.state === 'Failed'));
   }
 
   /** Paints a card's still image (or tinted placeholder) from Store.preview. Idempotent. */
@@ -417,17 +457,26 @@
         img = document.createElement('img');
         img.className = 'thumb-media still-img';
         img.alt = '';
+        img.decoding = 'async';
         thumb.insertBefore(img, thumb.firstChild);
       }
-      if (img.src !== pv.still.url) img.src = pv.still.url;
+      if (img.getAttribute('src') !== pv.still.url) img.src = pv.still.url;
       img.classList.remove('hidden');
       thumb.querySelector('.thumb-placeholder')?.classList.add('hidden');
     } else if (img) {
       img.classList.add('hidden');
+      thumb.querySelector('.thumb-placeholder')?.classList.remove('hidden');
     }
   }
 
+  function sameOrder(a, b) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+  }
+
   function buildGrid() {
+    if (hoverKey !== null) endHover();
     if (stillObserver) stillObserver.disconnect();
     cardEls.clear();
 
@@ -440,12 +489,26 @@
 
     const gridEl = document.getElementById('grid');
     gridEl.replaceChildren(frag);
-
-    document.getElementById('grid-empty').classList.toggle('hidden', Store.visible.length > 0);
-    document.getElementById('grid-status').textContent =
-      `${Store.visible.length.toLocaleString()} of ${Store.clips.size.toLocaleString()} clips`;
-
+    renderedVisible = Store.visible.slice();
+    updateGridStatus();
     observeCards();
+  }
+
+  /** Rebuilds only if the visible set or its order changed; otherwise repaints in place. */
+  function refreshGrid(changedKeys) {
+    if (!sameOrder(renderedVisible, Store.visible)) {
+      buildGrid();
+      return;
+    }
+    for (const key of changedKeys) updateCardVisuals(key);
+  }
+
+  function updateGridStatus() {
+    document.getElementById('grid-empty').classList.toggle('hidden', !Store.catalogLoaded || Store.visible.length > 0);
+    document.getElementById('grid-loading').classList.toggle('hidden', Store.catalogLoaded);
+    document.getElementById('grid-status').textContent = Store.catalogLoaded
+      ? `${Store.visible.length.toLocaleString()} of ${Store.clips.size.toLocaleString()} clips`
+      : '';
   }
 
   function observeCards() {
@@ -453,51 +516,78 @@
     for (const el of cardEls.values()) stillObserver.observe(el);
   }
 
+  // Visible cards ask for stills in batches, not one message per card.
+  let stillBatch = [];
+  let stillBatchTimer = null;
   function requestStillIfNeeded(key) {
     if (Store.requestedStill.has(key)) return;
     Store.requestedStill.add(key);
-    Bridge.send('requestPreviews', { keys: [key], kinds: 'Still' });
+    stillBatch.push(key);
+    if (!stillBatchTimer) {
+      stillBatchTimer = setTimeout(() => {
+        stillBatchTimer = null;
+        const keys = stillBatch;
+        stillBatch = [];
+        if (keys.length) Bridge.send('requestPreviews', { keys, kinds: 'Still' });
+      }, 30);
+    }
   }
 
   // ======================================================================================
   // 7. Hover preview
   //
   // One shared <video> is moved into whichever card's .thumb is currently hovered, rather
-  // than giving every one of up to ~1,500 cards its own <video> element.
+  // than giving every one of up to ~1,500 cards its own <video> element. A hover clip is
+  // made on demand (ffmpeg, a few seconds); moving to another card cancels a pending one.
   // ======================================================================================
 
   let hoverVideoEl = null;
   let hoverKey = null;
   let hoverTimer = null;
+  let hoverPendingKey = null; // a Hover request we made that has not been answered yet
 
   function clearHoverTimer() {
     if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
   }
 
+  function cancelPendingHover(exceptKey) {
+    const key = hoverPendingKey;
+    if (!key || key === exceptKey) return;
+    hoverPendingKey = null;
+    const pv = Store.preview.get(key);
+    // cancelPreviews drops both kinds for a key: never cancel a still that's still coming.
+    if (pv && pv.still && pv.still.status !== 'Pending') Bridge.send('cancelPreviews', { keys: [key] });
+  }
+
   function beginHoverIntent(key, cardEl) {
     hoverKey = key;
+    cancelPendingHover(key);
     const pv = Store.preview.get(key);
     if (pv && pv.hover && pv.hover.status === 'Ready' && pv.hover.url) {
       showHoverVideo(cardEl, pv.hover.url);
       return;
     }
-    if (!pv || !pv.hover || (pv.hover.status !== 'Pending' && pv.hover.status !== 'Unavailable')) {
-      Bridge.send('requestPreviews', { keys: [key], kinds: 'Hover' });
-    }
+    if (pv && pv.hover && pv.hover.status === 'Unavailable') return; // no ffmpeg: the still stays
+    hoverPendingKey = key;
+    cardEl.querySelector('.thumb')?.classList.add('is-loading');
+    Bridge.send('requestPreviews', { keys: [key], kinds: 'Hover' });
   }
 
   function showHoverVideo(cardEl, url) {
     const thumb = cardEl.querySelector('.thumb');
     if (!thumb) return;
-    if (hoverVideoEl.src !== url) hoverVideoEl.src = url;
-    thumb.appendChild(hoverVideoEl);
+    thumb.classList.remove('is-loading');
+    if (hoverVideoEl.getAttribute('src') !== url) hoverVideoEl.src = url;
+    thumb.insertBefore(hoverVideoEl, thumb.querySelector('.badges'));
     hoverVideoEl.classList.remove('hidden');
     hoverVideoEl.currentTime = 0;
     hoverVideoEl.play().catch(() => { /* autoplay may be blocked; the still stays visible underneath */ });
   }
 
   function endHover() {
+    const key = hoverKey;
     hoverKey = null;
+    if (key) cardEls.get(key)?.querySelector('.thumb')?.classList.remove('is-loading');
     hoverVideoEl.pause();
     hoverVideoEl.classList.add('hidden');
     if (hoverVideoEl.parentElement) hoverVideoEl.parentElement.removeChild(hoverVideoEl);
@@ -505,15 +595,19 @@
 
   function wireGridHover(gridEl) {
     hoverVideoEl = document.createElement('video');
-    hoverVideoEl.className = 'thumb-media hidden';
+    hoverVideoEl.className = 'thumb-media hover-video hidden';
     hoverVideoEl.muted = true;
     hoverVideoEl.loop = true;
     hoverVideoEl.playsInline = true;
+    hoverVideoEl.addEventListener('error', () => {
+      if (hoverVideoEl.getAttribute('src')) Bridge.log('warn', `hover clip failed to play: ${hoverVideoEl.getAttribute('src')}`);
+    });
 
     gridEl.addEventListener('mouseover', (e) => {
       const cardEl = e.target.closest('.card');
       if (!cardEl || cardEl.dataset.key === hoverKey) return;
       clearHoverTimer();
+      if (hoverKey !== null) endHover();
       const key = cardEl.dataset.key;
       hoverTimer = setTimeout(() => beginHoverIntent(key, cardEl), 160);
     });
@@ -529,17 +623,21 @@
   }
 
   // ======================================================================================
-  // 8. Detail pane
+  // 8. Detail pane + the native preview panel
+  //
+  // The host lays a native mpv HWND over #detail-preview-rect. It draws above ALL page
+  // content, so whenever anything covers that box -- the settings panel, the confirm
+  // dialog, a toast, the off-canvas sidebar -- or the box is clipped/scrolled, the page
+  // must send panelRect { visible: false }. updatePanel() is the one place that decides.
   // ======================================================================================
 
-  function openDetail(key) {
-    Store.detailKey = key;
-    const detailEl = document.getElementById('detail');
-    detailEl.classList.remove('hidden');
+  let selectedSentKey = null; // what the host was last told to play (selectClip)
 
+  function openDetail(key) {
     const clip = Store.clips.get(key);
-    const state = Store.state.get(key) || {};
-    if (!clip) return;
+    if (!clip) { closeDetail(); return; }
+    Store.detailKey = key;
+    document.getElementById('detail').classList.remove('hidden');
 
     document.getElementById('detail-title').textContent = clip.title;
 
@@ -560,53 +658,94 @@
     descEl.textContent = clip.description || '';
     descEl.classList.toggle('hidden', !clip.description);
 
-    const rotationEl = document.getElementById('toggle-rotation');
-    const pinEl = document.getElementById('toggle-pin');
-    rotationEl.checked = !!state.inRotation;
-    pinEl.checked = !!state.pinned;
+    const creditBits = [];
+    if (clip.creator) creditBits.push(`By ${clip.creator}`);
+    if (clip.licence) creditBits.push(clip.licence);
+    const creditEl = document.getElementById('detail-credit');
+    creditEl.textContent = creditBits.join(' \u00b7 ');
+    creditEl.classList.toggle('hidden', creditBits.length === 0);
+
     // PinManager.ClipFor returns null for local clips -- nothing to download, so pinning
-    // one is a no-op the host silently ignores (PinCheck.Skipped). Disable it here instead
-    // of letting the user discover that by nothing happening.
-    pinEl.disabled = !!clip.isLocal;
-    renderDetailDownload(state);
-    renderDetailTags(key);
+    // one is a no-op the host silently ignores. Disable it rather than letting the user
+    // discover that by nothing happening.
+    document.getElementById('toggle-pin').disabled = !!clip.isLocal;
+    renderDetailState(key);
 
     updateDetailPreview();
     markCardActive(key);
-    Bridge.send('selectClip', { key });
-    Bridge.send('requestPreviews', { keys: [key], kinds: 'Both' });
-    sendPanelRect();
+    if (selectedSentKey !== key) {
+      selectedSentKey = key;
+      Bridge.send('selectClip', { key });
+    }
+    const pv = Store.preview.get(key);
+    if (!pv || !pv.still || pv.still.status !== 'Ready') {
+      Store.requestedStill.add(key);
+      Bridge.send('requestPreviews', { keys: [key], kinds: 'Still' });
+    }
+    document.getElementById('detail').scrollTop = 0;
+    schedulePanelUpdate();
   }
 
   function closeDetail() {
-    if (Store.detailKey === null) return;
+    if (Store.detailKey === null && selectedSentKey === null) return;
     Store.detailKey = null;
     document.getElementById('detail').classList.add('hidden');
-    Bridge.send('selectClip', { key: null });
+    if (selectedSentKey !== null) {
+      selectedSentKey = null;
+      Bridge.send('selectClip', { key: null });
+    }
     markCardActive(null);
-    stopDetailPreview();
-    sendPanelRect();
+    schedulePanelUpdate();
+  }
+
+  function renderDetailState(key) {
+    const state = Store.state.get(key) || {};
+    document.getElementById('toggle-rotation').checked = !!state.inRotation;
+    document.getElementById('toggle-pin').checked = !!state.pinned;
+    renderDetailDownload(state);
+    renderDetailTags(key);
   }
 
   function renderDetailDownload(state) {
     const el = document.getElementById('detail-download');
-    if (state.download) {
-      const pct = state.download.fraction !== null && state.download.fraction !== undefined
-        ? `${Math.round(state.download.fraction * 100)}%` : '';
-      const bytes = state.download.totalBytes
-        ? `${formatBytes(state.download.bytesReceived)} of ${formatBytes(state.download.totalBytes)}`
-        : formatBytes(state.download.bytesReceived);
-      el.textContent = `Downloading\u2026 ${pct} (${bytes})`.replace('  ', ' ');
-      el.classList.remove('hidden');
-    } else if (state.pinned && state.cached) {
-      el.textContent = 'Kept offline \u2014 downloaded.';
-      el.classList.remove('hidden');
-    } else if (state.pinned) {
-      el.textContent = 'Kept offline \u2014 queued.';
-      el.classList.remove('hidden');
-    } else {
-      el.classList.add('hidden');
+    const bar = document.getElementById('detail-download-bar');
+    const text = document.getElementById('detail-download-text');
+    const retry = document.getElementById('detail-download-retry');
+    const dl = state.download;
+    let message = null;
+    let pct = null;
+    let failed = false;
+
+    if (dl) {
+      pct = downloadPercent(dl);
+      const bytes = dl.totalBytes
+        ? `${formatBytes(dl.bytesReceived)} of ${formatBytes(dl.totalBytes)}`
+        : formatBytes(dl.bytesReceived);
+      switch (dl.state) {
+        case 'Downloading': message = `Downloading\u2026 ${pct !== null ? pct + '%' : ''} (${bytes})`; break;
+        case 'Queued':
+          message = Store.cacheStats && Store.cacheStats.ownsPins === false
+            ? 'Queued \u2014 the screen saver is downloading kept-offline clips.'
+            : 'Queued for download.';
+          break;
+        case 'Waiting': message = 'Waiting \u2014 another Win4KSS process is downloading this clip.'; break;
+        case 'Failed': message = `Download failed${dl.error ? ': ' + dl.error : '.'}`; failed = true; break;
+        case 'Done': message = 'Downloaded.'; pct = 100; break;
+        case 'Cancelled': message = null; break;
+        default: message = dl.state;
+      }
     }
+    if (message === null && state.pinned) message = state.cached ? 'Kept offline \u2014 downloaded.' : 'Kept offline \u2014 queued.';
+    else if (message === null && state.cached) message = 'In the disk cache.';
+    if (message !== null && state.lastPlayedUtc && !dl) message += ` Last played ${formatWhen(state.lastPlayedUtc)}.`;
+    else if (message === null && state.lastPlayedUtc) message = `Last played ${formatWhen(state.lastPlayedUtc)}.`;
+
+    el.classList.toggle('hidden', message === null);
+    el.classList.toggle('is-failed', failed);
+    text.textContent = message || '';
+    bar.classList.toggle('hidden', !(dl && (dl.state === 'Downloading' || dl.state === 'Done')));
+    bar.style.setProperty('--pct', String(pct || 0));
+    retry.classList.toggle('hidden', !failed);
   }
 
   function renderDetailTags(key) {
@@ -621,6 +760,7 @@
       if (tag.facet === 'State' && tag.value === STATE_VALUES.NEW) cls += ' tag-state-new';
       chip.className = cls;
       chip.textContent = tag.value;
+      chip.dataset.facet = tag.facet;
       chip.title = `Filter by ${FACET_LABELS[tag.facet] || tag.facet}`;
       chip.addEventListener('click', () => toggleFacetValue(tag.facet, tag.value, !isFacetValueActive(tag.facet, tag.value)));
       tagsEl.appendChild(chip);
@@ -629,76 +769,77 @@
 
   function refreshDetailTagChips() {
     if (Store.detailKey === null) return;
-    const tagsEl = document.getElementById('detail-tags');
-    for (const chip of tagsEl.children) {
-      const tag = combinedTags(Store.detailKey).find((t) => t.value === chip.textContent);
-      chip.classList.toggle('is-active', !!tag && isFacetValueActive(tag.facet, tag.value));
+    for (const chip of document.getElementById('detail-tags').children) {
+      chip.classList.toggle('is-active', isFacetValueActive(chip.dataset.facet, chip.textContent));
     }
   }
 
+  /** The still under the native panel: what shows before mpv paints, or if it can't. */
   function updateDetailPreview() {
     const key = Store.detailKey;
     if (!key) return;
     const pv = Store.preview.get(key) || {};
     const placeholderEl = document.getElementById('detail-preview-placeholder');
     const imgEl = document.getElementById('detail-preview-img');
-    const videoEl = document.getElementById('detail-preview-video');
     const color = (pv.still && pv.still.color) || (pv.hover && pv.hover.color);
-    if (color) placeholderEl.style.backgroundColor = color;
+    placeholderEl.style.backgroundColor = color || '';
 
-    if (pv.hover && pv.hover.status === 'Ready' && pv.hover.url) {
-      if (videoEl.src !== pv.hover.url) videoEl.src = pv.hover.url;
-      videoEl.classList.remove('hidden');
-      videoEl.play().catch(() => {});
-      imgEl.classList.add('hidden');
-    } else if (pv.still && pv.still.status === 'Ready' && pv.still.url) {
-      videoEl.classList.add('hidden');
-      videoEl.pause();
-      if (imgEl.src !== pv.still.url) imgEl.src = pv.still.url;
+    if (pv.still && pv.still.status === 'Ready' && pv.still.url) {
+      if (imgEl.getAttribute('src') !== pv.still.url) imgEl.src = pv.still.url;
       imgEl.classList.remove('hidden');
     } else {
-      videoEl.classList.add('hidden');
-      videoEl.pause();
       imgEl.classList.add('hidden');
     }
-  }
-
-  function stopDetailPreview() {
-    const imgEl = document.getElementById('detail-preview-img');
-    const videoEl = document.getElementById('detail-preview-video');
-    videoEl.pause();
-    videoEl.removeAttribute('src');
-    videoEl.classList.add('hidden');
-    imgEl.classList.add('hidden');
   }
 
   let lastActiveCardKey = null;
   function markCardActive(key) {
-    if (lastActiveCardKey) {
-      const prev = cardEls.get(lastActiveCardKey);
-      if (prev) prev.classList.remove('is-active');
-    }
-    if (key) {
-      const el = cardEls.get(key);
-      if (el) el.classList.add('is-active');
-    }
+    if (lastActiveCardKey) cardEls.get(lastActiveCardKey)?.classList.remove('is-active');
+    if (key) cardEls.get(key)?.classList.add('is-active');
     lastActiveCardKey = key;
   }
 
-  /** Tells the host where to park its native mpv preview HWND, in page-relative CSS
-   *  pixels (docs/browser-bridge-contract.md's `panelRect`). Sent on select/resize/scroll. */
-  function sendPanelRect() {
-    const detailEl = document.getElementById('detail');
-    if (Store.detailKey === null || detailEl.classList.contains('hidden')) {
-      Bridge.send('panelRect', { x: 0, y: 0, width: 0, height: 0, visible: false });
-      return;
+  function intersects(a, b) {
+    return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+  }
+
+  /** Anything currently drawn over the video box? (The native panel would hide it.) */
+  function panelOccluded(rect) {
+    if (document.querySelector('.overlay:not(.hidden)')) return true; // settings, confirm
+    for (const el of document.querySelectorAll('.toast, .bulk-bar:not(.hidden), .sidebar.is-open')) {
+      if (intersects(rect, el.getBoundingClientRect())) return true;
     }
-    const rect = document.getElementById('detail-preview-rect').getBoundingClientRect();
-    Bridge.send('panelRect', {
-      x: Math.round(rect.left), y: Math.round(rect.top),
-      width: Math.round(rect.width), height: Math.round(rect.height),
-      visible: true,
-    });
+    return false;
+  }
+
+  let lastPanelJson = null;
+  function updatePanel() {
+    const detailEl = document.getElementById('detail');
+    let msg = { x: 0, y: 0, width: 0, height: 0, visible: false };
+    if (Store.detailKey !== null && !detailEl.classList.contains('hidden') && !document.hidden) {
+      const rect = document.getElementById('detail-preview-rect').getBoundingClientRect();
+      const pane = detailEl.getBoundingClientRect();
+      const fits = rect.width > 0 && rect.height > 0 &&
+        rect.top >= pane.top - 0.5 && rect.bottom <= pane.bottom + 0.5 &&
+        rect.left >= pane.left - 0.5 && rect.right <= pane.right + 0.5 &&
+        rect.bottom <= window.innerHeight + 0.5 && rect.right <= window.innerWidth + 0.5;
+      msg = {
+        x: Math.round(rect.left), y: Math.round(rect.top),
+        width: Math.round(rect.width), height: Math.round(rect.height),
+        visible: fits && !panelOccluded(rect),
+      };
+    }
+    const json = JSON.stringify(msg);
+    if (json === lastPanelJson) return;
+    lastPanelJson = json;
+    Bridge.send('panelRect', msg);
+  }
+
+  let panelFrame = 0;
+  /** Coalesces layout-changing events into one panelRect per frame. */
+  function schedulePanelUpdate() {
+    if (panelFrame) return;
+    panelFrame = requestAnimationFrame(() => { panelFrame = 0; updatePanel(); });
   }
 
   // ======================================================================================
@@ -733,12 +874,13 @@
     const bulkBarEl = document.getElementById('bulk-bar');
     if (keys.length === 1) {
       bulkBarEl.classList.add('hidden');
-      openDetail(keys[0]);
+      if (Store.detailKey !== keys[0]) openDetail(keys[0]);
     } else {
       closeDetail();
       bulkBarEl.classList.toggle('hidden', keys.length === 0);
       if (keys.length > 0) document.getElementById('bulk-count').textContent = `${keys.length.toLocaleString()} selected`;
     }
+    schedulePanelUpdate();
   }
 
   function clearSelection() {
@@ -764,25 +906,32 @@
   }
 
   // ======================================================================================
-  // 10. Sidebar (facets + search)
+  // 10. Sidebar (facets)
   // ======================================================================================
 
   function renderFacets() {
     const counts = computeFacetCounts();
     const listEl = document.getElementById('facet-list');
+    const scroll = listEl.parentElement.scrollTop;
     listEl.innerHTML = '';
 
     for (const facet of TAG_FACETS) {
       const valuesMap = counts.get(facet);
+      const activeSet = Store.filters.facets.get(facet);
+      // A value that is filtered on stays listed even when nothing else matches (count 0).
+      if (activeSet) for (const v of activeSet) if (!valuesMap.has(v)) valuesMap.set(v, 0);
       if (!valuesMap || valuesMap.size === 0) continue;
 
       const group = document.createElement('div');
       group.className = 'facet-group' + (Store.collapsedFacets.has(facet) ? ' is-collapsed' : '');
+      group.dataset.facet = facet;
 
       const head = document.createElement('button');
       head.type = 'button';
       head.className = 'facet-group-head';
-      head.innerHTML = `<span>${esc(FACET_LABELS[facet] || facet)}</span><span class="chevron">\u25BC</span>`;
+      head.innerHTML = `<span>${esc(FACET_LABELS[facet] || facet)}</span>` +
+        (activeSet ? `<span class="facet-active-count">${activeSet.size}</span>` : '') +
+        '<span class="chevron">\u25BC</span>';
       head.addEventListener('click', () => {
         group.classList.toggle('is-collapsed');
         if (group.classList.contains('is-collapsed')) Store.collapsedFacets.add(facet);
@@ -792,22 +941,38 @@
 
       const list = document.createElement('div');
       list.className = 'facet-values';
-      const activeSet = Store.filters.facets.get(facet);
       const sorted = Array.from(valuesMap.entries()).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+      const expanded = Store.expandedFacets.has(facet);
+      let shown = 0;
 
       for (const [value, count] of sorted) {
         const active = !!(activeSet && activeSet.has(value));
+        if (!expanded && shown >= FACET_PREVIEW_COUNT && !active) continue;
+        shown++;
         const row = document.createElement('label');
-        row.className = 'facet-row' + (active ? ' is-active' : '');
+        row.className = 'facet-row' + (active ? ' is-active' : '') + (count === 0 ? ' is-zero' : '');
         row.innerHTML = `<input type="checkbox" ${active ? 'checked' : ''}>` +
-          `<span class="facet-value-name">${esc(value)}</span><span class="facet-value-count">${count}</span>`;
+          `<span class="facet-value-name" title="${esc(value)}">${esc(value)}</span><span class="facet-value-count">${count.toLocaleString()}</span>`;
         row.querySelector('input').addEventListener('change', (e) => toggleFacetValue(facet, value, e.target.checked));
         list.appendChild(row);
+      }
+
+      if (sorted.length > FACET_PREVIEW_COUNT) {
+        const more = document.createElement('button');
+        more.type = 'button';
+        more.className = 'link-btn facet-more';
+        more.textContent = expanded ? 'Show fewer' : `Show all ${sorted.length.toLocaleString()}`;
+        more.addEventListener('click', () => {
+          if (expanded) Store.expandedFacets.delete(facet); else Store.expandedFacets.add(facet);
+          renderFacets();
+        });
+        list.appendChild(more);
       }
 
       group.appendChild(list);
       listEl.appendChild(group);
     }
+    listEl.parentElement.scrollTop = scroll;
   }
 
   function wireSidebar() {
@@ -816,6 +981,10 @@
       Store.filters.search = '';
       document.getElementById('search-input').value = '';
       onFiltersChanged();
+    });
+    document.getElementById('toggle-sidebar').addEventListener('click', () => {
+      document.getElementById('sidebar').classList.toggle('is-open');
+      schedulePanelUpdate();
     });
   }
 
@@ -842,8 +1011,7 @@
       btn.addEventListener('click', () => {
         for (const b of document.querySelectorAll('.viewsize-btn')) b.classList.toggle('is-active', b === btn);
         Store.viewSize = btn.dataset.size;
-        const gridEl = document.getElementById('grid');
-        gridEl.className = 'grid grid-' + Store.viewSize;
+        document.getElementById('grid').className = 'grid grid-' + Store.viewSize;
       });
     }
 
@@ -855,17 +1023,19 @@
 
     document.getElementById('refresh-catalogs').addEventListener('click', () => {
       Bridge.send('refreshCatalogs', {});
-      showRefreshSpinner(true);
+      setRefreshing(true, 'Refreshing catalogues\u2026');
     });
 
     document.getElementById('start-now').addEventListener('click', () => Bridge.send('startNow', {}));
-
     document.getElementById('open-settings').addEventListener('click', openSettings);
   }
 
-  function showRefreshSpinner(on) {
+  function setRefreshing(on, text) {
     document.getElementById('refresh-spinner').classList.toggle('hidden', !on);
     document.getElementById('refresh-catalogs').disabled = on;
+    const status = document.getElementById('refresh-status');
+    status.textContent = on ? (text || '') : '';
+    status.classList.toggle('hidden', !on || !text);
   }
 
   // ======================================================================================
@@ -878,10 +1048,17 @@
     document.getElementById('settings-overlay').classList.remove('hidden');
     if (!settingsBuilt && Store.settings) buildSettingsPanes();
     if (settingsBuilt) syncSettingsValues();
+    updatePanel(); // hide the native panel before the overlay paints under it
   }
 
   function closeSettings() {
     document.getElementById('settings-overlay').classList.add('hidden');
+    schedulePanelUpdate();
+  }
+
+  function showSettingsTab(name) {
+    for (const t of document.querySelectorAll('.settings-tab')) t.classList.toggle('is-active', t.dataset.tab === name);
+    for (const p of document.querySelectorAll('.settings-pane')) p.classList.toggle('is-active', p.dataset.tab === name);
   }
 
   function wireSettingsStatic() {
@@ -890,12 +1067,7 @@
       if (e.target.id === 'settings-overlay') closeSettings();
     });
     for (const tab of document.querySelectorAll('.settings-tab')) {
-      tab.addEventListener('click', () => {
-        for (const t of document.querySelectorAll('.settings-tab')) t.classList.toggle('is-active', t === tab);
-        for (const pane of document.querySelectorAll('.settings-pane')) {
-          pane.classList.toggle('is-active', pane.dataset.tab === tab.dataset.tab);
-        }
-      });
+      tab.addEventListener('click', () => showSettingsTab(tab.dataset.tab));
     }
   }
 
@@ -903,14 +1075,17 @@
   // flushed once typing/dragging settles, so a slider doesn't spam saveSettings.
   let pendingPatch = {};
   let saveTimer = null;
-  function patchSettings(patch) {
+  function patchSettings(patch, immediate) {
     Object.assign(pendingPatch, patch);
     Object.assign(Store.settings, patch); // optimistic locally; the host echoes `settings` back anyway
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      Bridge.send('saveSettings', { patch: pendingPatch });
+    const flush = () => {
+      saveTimer = null;
+      const p = pendingPatch;
       pendingPatch = {};
-    }, 400);
+      Bridge.send('saveSettings', { patch: p });
+    };
+    if (immediate) flush(); else saveTimer = setTimeout(flush, 400);
   }
 
   function buildSettingsPanes() {
@@ -925,37 +1100,40 @@
 
   function pane(tab) { return document.querySelector(`.settings-pane[data-tab="${tab}"]`); }
 
+  function switchRow(id, label) {
+    return `<label class="switch-row"><span class="switch"><input id="${id}" type="checkbox"><span class="switch-track"></span></span><span class="switch-label">${label}</span></label>`;
+  }
+
   function buildSourcesPane() {
     const p = pane('sources');
     p.innerHTML = `
+      <h3>Rotation by source</h3>
+      <p class="settings-hint">"Auto-add" puts clips a catalogue refresh finds from that source straight into the rotation. Which existing clips play is up to you: tick them in the grid, or answer the prompt when you flip a switch.</p>
+      <div id="source-toggle-list" class="source-toggle-list"></div>
+
       <h3>Local folders</h3>
-      <p class="settings-hint">Folders of video files on this machine. Local clips bypass the download cache and cannot be kept offline (they're already on disk).</p>
+      <p class="settings-hint">Folders of video files on this machine. Local clips play from disk, so they are never cached or kept offline.</p>
       <ul id="folder-list" class="folder-list"></ul>
       <div class="settings-row">
-        <input id="folder-input" type="text" placeholder="D:\\Videos\\Aerial" style="flex:1 1 auto;">
+        <button id="folder-browse" type="button" class="btn">Add folder\u2026</button>
+        <input id="folder-input" type="text" placeholder="or type a path, e.g. D:\\Videos\\Aerial" style="flex:1 1 auto;">
         <button id="folder-add" type="button" class="btn">Add</button>
       </div>
-      <p class="settings-hint">
-        TODO(local): the bridge contract has no folder-picker round trip (no page\u2192host
-        message returns a path from a native dialog), so this types/pastes a path rather than
-        browsing for one like the old SettingsForm's FolderBrowserDialog did.
-      </p>
-
-      <h3>Auto-add new clips</h3>
-      <p class="settings-hint">When a catalogue refresh finds new clips from a source below, automatically put them in rotation.</p>
-      <div id="source-toggle-list"></div>
     `;
 
-    document.getElementById('folder-add').addEventListener('click', () => {
+    document.getElementById('folder-browse').addEventListener('click', () => Bridge.send('pickFolder', { purpose: 'localFolder' }));
+    const addTyped = () => {
       const input = document.getElementById('folder-input');
       const value = input.value.trim();
       if (!value) return;
       const folders = (Store.settings.localFolders || []).slice();
-      if (!folders.includes(value)) folders.push(value);
+      if (!folders.some((f) => f.toLowerCase() === value.toLowerCase())) folders.push(value);
       input.value = '';
-      patchSettings({ localFolders: folders });
+      patchSettings({ localFolders: folders }, true);
       renderFolderList();
-    });
+    };
+    document.getElementById('folder-add').addEventListener('click', addTyped);
+    document.getElementById('folder-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') addTyped(); });
   }
 
   function renderFolderList() {
@@ -964,23 +1142,22 @@
     const folders = Store.settings.localFolders || [];
     listEl.innerHTML = folders.length
       ? folders.map((f, i) => `<li><span>${esc(f)}</span><button type="button" class="remove-folder" data-i="${i}">Remove</button></li>`).join('')
-      : '<li style="color:var(--text-faint)">No local folders.</li>';
+      : '<li class="folder-empty">No local folders.</li>';
     for (const btn of listEl.querySelectorAll('.remove-folder')) {
       btn.addEventListener('click', () => {
         const i = Number(btn.dataset.i);
-        const next = folders.slice(0, i).concat(folders.slice(i + 1));
-        patchSettings({ localFolders: next });
+        patchSettings({ localFolders: folders.slice(0, i).concat(folders.slice(i + 1)) }, true);
         renderFolderList();
       });
     }
   }
 
-  function clipCountForSource(sourceId, excludeInRotation) {
+  /** Clips of a rotation source (clip.sources) whose inRotation is `inRotation`. */
+  function sourceClipCount(sourceId, inRotation) {
     let count = 0;
     for (const [key, clip] of Store.clips) {
-      if (clip.sourceId !== sourceId && !(clip.sourceIds || []).includes(sourceId)) continue;
-      if (excludeInRotation && Store.state.get(key)?.inRotation) continue;
-      count++;
+      if (!(clip.sources || []).includes(sourceId)) continue;
+      if (!!(Store.state.get(key) || {}).inRotation === inRotation) count++;
     }
     return count;
   }
@@ -988,33 +1165,47 @@
   function renderSourceToggles() {
     const listEl = document.getElementById('source-toggle-list');
     if (!listEl) return;
-    const available = Store.settings.availableSources || [];
-    const autoAdd = new Set(Store.settings.autoAddSources || []);
-    listEl.innerHTML = available.map((id) => `
+    const rows = Store.sources.length
+      ? Store.sources
+      : (Store.settings.availableSources || []).map((id) => ({ id, name: id, clipCount: 0, autoAdd: (Store.settings.autoAddSources || []).includes(id) }));
+
+    listEl.innerHTML = rows.map((s) => {
+      const inRotation = sourceClipCount(s.id, true);
+      return `
       <div class="source-toggle-row">
-        <span>${esc(sourceIdDisplayName(id))}</span>
-        <label class="switch">
-          <input type="checkbox" data-source="${esc(id)}" ${autoAdd.has(id) ? 'checked' : ''}>
-          <span class="switch-track"></span>
+        <div class="source-toggle-text">
+          <span class="source-name">${esc(s.name)}</span>
+          <span class="source-counts">${s.clipCount.toLocaleString()} clip${s.clipCount === 1 ? '' : 's'} \u00b7 ${inRotation.toLocaleString()} in rotation</span>
+        </div>
+        <label class="switch-row" title="Auto-add new clips from ${esc(s.name)}">
+          <span class="switch-label switch-label-dim">Auto-add</span>
+          <span class="switch"><input type="checkbox" data-source="${esc(s.id)}" ${s.autoAdd ? 'checked' : ''}><span class="switch-track"></span></span>
         </label>
-      </div>`).join('');
+      </div>`;
+    }).join('');
 
     for (const input of listEl.querySelectorAll('input[type="checkbox"]')) {
-      input.addEventListener('change', () => {
+      input.addEventListener('change', async () => {
         const sourceId = input.dataset.source;
-        const turningOn = input.checked;
-        if (!turningOn) {
-          Bridge.send('setAutoAdd', { sourceId, value: false });
-          return;
+        const value = input.checked;
+        const name = sourceName(sourceId);
+        // On: the clips not yet in rotation could join. Off: the ones in it could leave.
+        const n = sourceClipCount(sourceId, !value);
+        let includeExisting = false;
+        if (n > 0) {
+          const answer = await confirmDialog(
+            value
+              ? `New ${name} clips will join the rotation. Also add the existing ${n.toLocaleString()} ${name} clip${n === 1 ? '' : 's'} not in it yet?`
+              : `New ${name} clips will no longer join the rotation. Also take the ${n.toLocaleString()} ${name} clip${n === 1 ? '' : 's'} in it out?`,
+            [
+              { label: value ? `Add ${n.toLocaleString()}` : `Remove ${n.toLocaleString()}`, value: 'yes', accent: true },
+              { label: 'Only future clips', value: 'no' },
+              { label: 'Cancel', value: 'cancel' },
+            ]);
+          if (answer === 'cancel' || answer === null) { input.checked = !value; return; }
+          includeExisting = answer === 'yes';
         }
-        const newCount = clipCountForSource(sourceId, true);
-        if (newCount === 0) {
-          Bridge.send('setAutoAdd', { sourceId, value: true, includeExisting: false });
-          return;
-        }
-        const includeExisting = window.confirm(
-          `Also add the ${newCount.toLocaleString()} existing ${sourceIdDisplayName(sourceId)} clip${newCount === 1 ? '' : 's'} not currently in rotation?`);
-        Bridge.send('setAutoAdd', { sourceId, value: true, includeExisting });
+        Bridge.send('setAutoAdd', { sourceId, value, includeExisting });
       });
     }
   }
@@ -1031,7 +1222,7 @@
         <option value="Hd1080Hdr">1080p HDR</option>
         <option value="Hd1080H264">1080p H.264 (most compatible)</option>
       </select>
-      <p class="settings-hint">HDR is PQ-encoded and gets tone-mapped on an SDR display, so SDR is the safer default.</p>
+      <p class="settings-hint">Applies to Apple's clips; the others come in one rendition. HDR is PQ-encoded and gets tone-mapped on an SDR display, so SDR is the safer default.</p>
 
       <h3>Multiple displays</h3>
       <select id="set-multimonitor">
@@ -1042,32 +1233,34 @@
       </select>
 
       <h3>Order</h3>
-      <label class="switch-row"><span class="switch"><input id="set-shuffle" type="checkbox"><span class="switch-track"></span></span><span class="switch-label">Shuffle the play order</span></label>
-      <label class="switch-row"><span class="switch"><input id="set-timeofday" type="checkbox"><span class="switch-track"></span></span><span class="switch-label">Prefer clips matching the time of day</span></label>
-      <p class="settings-hint">Only 4 of Apple's 114 clips carry a day/night label, so this nudges very little.</p>
+      ${switchRow('set-shuffle', 'Shuffle the play order')}
+      ${switchRow('set-timeofday', 'Prefer clips matching the time of day')}
+      <p class="settings-hint">Only a handful of clips carry a day/night label, so this nudges very little.</p>
     `;
-    document.getElementById('set-quality').addEventListener('change', (e) => patchSettings({ quality: e.target.value }));
-    document.getElementById('set-multimonitor').addEventListener('change', (e) => patchSettings({ multiMonitorMode: e.target.value }));
-    document.getElementById('set-shuffle').addEventListener('change', (e) => patchSettings({ shuffle: e.target.checked }));
-    document.getElementById('set-timeofday').addEventListener('change', (e) => patchSettings({ useTimeOfDay: e.target.checked }));
+    document.getElementById('set-quality').addEventListener('change', (e) => patchSettings({ quality: e.target.value }, true));
+    document.getElementById('set-multimonitor').addEventListener('change', (e) => patchSettings({ multiMonitorMode: e.target.value }, true));
+    document.getElementById('set-shuffle').addEventListener('change', (e) => patchSettings({ shuffle: e.target.checked }, true));
+    document.getElementById('set-timeofday').addEventListener('change', (e) => patchSettings({ useTimeOfDay: e.target.checked }, true));
   }
 
   function buildCachePane() {
     const p = pane('cache');
     p.innerHTML = `
       <h3>Disk cache</h3>
-      <label class="switch-row"><span class="switch"><input id="set-cacheenabled" type="checkbox"><span class="switch-track"></span></span><span class="switch-label">Keep watched clips on disk</span></label>
+      ${switchRow('set-cacheenabled', 'Keep played clips on disk')}
 
       <div class="settings-row">
         <span class="field-label">Folder</span>
         <input id="set-cachedir" type="text" style="flex:1 1 auto;">
+        <button id="cachedir-browse" type="button" class="btn">Browse\u2026</button>
+        <button id="cachedir-open" type="button" class="btn">Open</button>
       </div>
       <div class="settings-row">
-        <span class="field-label">Budget (GB)</span>
+        <span class="field-label">Limit</span>
         <input id="set-budget" type="range" min="1" max="500" step="1" style="flex:1 1 auto;">
-        <span id="set-budget-readout" style="min-width:48px;text-align:right;"></span>
+        <span id="set-budget-readout" class="budget-readout"></span>
       </div>
-      <p class="settings-hint">When the cache exceeds its budget the least recently played clips are deleted.</p>
+      <p class="settings-hint">Clips kept offline count against the limit and are never evicted; past it, the least recently played of the rest go first.</p>
 
       <div class="cache-bar" id="cache-bar"></div>
       <div class="cache-legend">
@@ -1075,35 +1268,36 @@
         <span><span class="dot rolling"></span>Rolling cache</span>
         <span id="cache-legend-free"></span>
       </div>
+      <p id="cache-pins" class="settings-hint"></p>
       <div class="settings-row">
-        <button id="cache-purge" type="button" class="btn">Purge rolling cache</button>
+        <button id="cache-retry" type="button" class="btn">Retry failed downloads</button>
+        <button id="cache-purge" type="button" class="btn btn-danger">Purge rolling cache\u2026</button>
       </div>
-      <p class="settings-hint">
-        TODO(local): "Purge rolling cache" sends a <code>purgeCache</code> page\u2192host message
-        that isn't in docs/browser-bridge-contract.md as written -- the contract's page\u2192host
-        table has no entry for it, even though the plan's Cache tab calls for "purge non-pinned"
-        and VideoCache.PurgeUnpinned() already exists server-side. Flagged for the host side to
-        confirm/add rather than silently assumed.
-      </p>
 
       <h3>Previews</h3>
       <div class="settings-row">
-        <span class="field-label">ffmpeg path</span>
-        <input id="set-ffmpeg" type="text" placeholder="C:\\ffmpeg\\ffmpeg.exe" style="flex:1 1 auto;">
+        <span class="field-label">ffmpeg</span>
+        <input id="set-ffmpeg" type="text" placeholder="found automatically (PATH, C:\\ffmpeg)" style="flex:1 1 auto;">
+        <button id="previews-open" type="button" class="btn">Open previews folder</button>
       </div>
       <p id="preview-caps" class="settings-hint"></p>
     `;
-    document.getElementById('set-cacheenabled').addEventListener('change', (e) => patchSettings({ cacheEnabled: e.target.checked }));
-    document.getElementById('set-cachedir').addEventListener('change', (e) => patchSettings({ cacheDirectory: e.target.value }));
-    document.getElementById('set-ffmpeg').addEventListener('change', (e) => patchSettings({ ffmpegPath: e.target.value || null }));
+    document.getElementById('set-cacheenabled').addEventListener('change', (e) => patchSettings({ cacheEnabled: e.target.checked }, true));
+    document.getElementById('set-cachedir').addEventListener('change', (e) => patchSettings({ cacheDirectory: e.target.value }, true));
+    document.getElementById('cachedir-browse').addEventListener('click', () => Bridge.send('pickFolder', { purpose: 'cacheDirectory' }));
+    document.getElementById('cachedir-open').addEventListener('click', () => Bridge.send('openFolder', { which: 'cache' }));
+    document.getElementById('set-ffmpeg').addEventListener('change', (e) => patchSettings({ ffmpegPath: e.target.value.trim() || null }, true));
+    document.getElementById('previews-open').addEventListener('click', () => Bridge.send('openFolder', { which: 'previews' }));
     document.getElementById('set-budget').addEventListener('input', (e) => {
       document.getElementById('set-budget-readout').textContent = `${e.target.value} GB`;
       patchSettings({ cacheBudgetGb: Number(e.target.value) });
     });
-    document.getElementById('cache-purge').addEventListener('click', () => {
-      if (window.confirm('Delete all rolling (non-pinned) cached video? Clips kept offline are not touched.')) {
-        Bridge.send('purgeCache', {});
-      }
+    document.getElementById('cache-retry').addEventListener('click', () => Bridge.send('retryDownloads', {}));
+    document.getElementById('cache-purge').addEventListener('click', async () => {
+      const answer = await confirmDialog(
+        'Delete every cached clip that is not kept offline? They download again the next time they play.',
+        [{ label: 'Purge', value: 'yes', danger: true }, { label: 'Cancel', value: 'no' }]);
+      if (answer === 'yes') Bridge.send('purgeCache', {});
     });
   }
 
@@ -1111,20 +1305,47 @@
     const p = pane('trigger');
     p.innerHTML = `
       <h3>Start the screen saver on demand</h3>
-      <p class="settings-hint">Useful when you're getting up to leave and don't want to wait out the idle timer.</p>
+      <p class="settings-hint">For when you're walking away and don't want to wait out the idle timer. It honours "On resume, display logon screen".</p>
       <div class="settings-row"><button id="set-startnow" type="button" class="btn btn-accent">Start now</button></div>
 
       <h3>Shortcuts</h3>
-      <p class="settings-hint">
-        TODO(local): desktop/Start Menu shortcuts and the hotkey (today's <code>ShortcutManager</code>
-        / <code>ApplyShortcuts</code> in SettingsForm.cs) aren't in docs/browser-bridge-contract.md
-        at all -- there's no settings field reporting whether a shortcut exists, and no
-        page\u2192host message to create/remove one or set the hotkey. Until the contract grows
-        that, this tab can only trigger "Start now"; shortcut management stays wherever 67's
-        BrowserForm/BrowserBridge decides to carry it over.
-      </p>
+      ${switchRow('set-shortcut-desktop', 'Desktop shortcut')}
+      ${switchRow('set-shortcut-startmenu', 'Start menu shortcut')}
+      <div class="settings-row">
+        <span class="field-label">Hotkey</span>
+        <input id="set-hotkey" type="text" readonly placeholder="click, then press a key combination" class="hotkey-input">
+        <button id="hotkey-clear" type="button" class="btn">Clear</button>
+      </div>
+      <p class="settings-hint">Windows attaches the hotkey to a shortcut, so it needs one of them. Use Ctrl, Alt or Shift plus a key. Backspace clears it.</p>
     `;
     document.getElementById('set-startnow').addEventListener('click', () => Bridge.send('startNow', {}));
+    document.getElementById('set-shortcut-desktop').addEventListener('change', (e) => patchSettings({ shortcutDesktop: e.target.checked }, true));
+    document.getElementById('set-shortcut-startmenu').addEventListener('change', (e) => patchSettings({ shortcutStartMenu: e.target.checked }, true));
+    document.getElementById('hotkey-clear').addEventListener('click', () => patchSettings({ hotkey: '' }, true));
+
+    const hk = document.getElementById('set-hotkey');
+    hk.addEventListener('focus', () => hk.classList.add('is-recording'));
+    hk.addEventListener('blur', () => { hk.classList.remove('is-recording'); hk.value = formatHotkey(Store.settings.hotkey); });
+    hk.addEventListener('keydown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === 'Escape' || e.key === 'Tab') { hk.blur(); return; }
+      if (['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)) {
+        hk.value = [e.ctrlKey && 'Ctrl', e.altKey && 'Alt', e.shiftKey && 'Shift'].filter(Boolean).join('+') + '+\u2026';
+        return;
+      }
+      if ((e.key === 'Backspace' || e.key === 'Delete') && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+        patchSettings({ hotkey: '' }, true);
+        hk.blur();
+        return;
+      }
+      // DOM KeyboardEvent.code names ("KeyS", "Digit1", "F5"); the host normalises to CTRL+ALT+S
+      // and refuses (with a notice) anything without a modifier.
+      const combo = [e.ctrlKey && 'Ctrl', e.altKey && 'Alt', e.shiftKey && 'Shift', e.code].filter(Boolean).join('+');
+      patchSettings({ hotkey: combo }, true);
+      hk.value = formatHotkey(combo.replace(/\+(?:Key|Digit)(\w)$/, '+$1'));
+      hk.blur();
+    });
   }
 
   function buildAboutPane() {
@@ -1132,24 +1353,42 @@
     p.innerHTML = `
       <h3>Win4KSS</h3>
       <div class="about-block">
-        4K aerial screen saver for Windows.<br><br>
-        Cache folder: <code id="about-cachedir"></code><br>
-        ffmpeg: <code id="about-ffmpeg"></code>
+        4K video screen saver for Windows.<br>
+        Version <code id="about-version"></code> \u00b7 libmpv API <code id="about-mpv"></code>
       </div>
+      <h3>Files</h3>
+      <table class="about-paths">
+        <tr><th>Data folder</th><td><code id="about-data"></code></td><td><button type="button" class="btn" data-open="logs">Open</button></td></tr>
+        <tr><th>Settings</th><td><code id="about-settings"></code></td><td></td></tr>
+        <tr><th>Log</th><td><code id="about-log"></code></td><td></td></tr>
+        <tr><th>mpv log</th><td><code id="about-mpvlog"></code></td><td></td></tr>
+        <tr><th>Cache</th><td><code id="about-cache"></code></td><td><button type="button" class="btn" data-open="cache">Open</button></td></tr>
+        <tr><th>Previews</th><td><code id="about-previews"></code></td><td><button type="button" class="btn" data-open="previews">Open</button></td></tr>
+      </table>
       <p class="settings-hint">
         Apple's aerial CDN presents a certificate chaining to Apple Root CA, which Windows does
-        not trust out of the box. Rather than disabling verification, this app pins Apple's real
-        root for its own downloads and hands mpv a certificate bundle of every Windows-trusted
-        root plus Apple's.
-      </p>
-      <p class="settings-hint">
-        TODO(local): the old About tab also showed the libmpv API version and the log file paths
-        (SettingsForm.cs's About tab, reading MpvPlayer.ApiVersionString / AppPaths.LogFile
-        directly in-process). None of that crosses the bridge contract as written -- there's no
-        message carrying it and no AppPaths equivalent reachable from JS. Left out rather than
-        guessed; would need either a new field on \`settings\` or a dedicated message.
+        not trust out of the box. Rather than disabling verification, Win4KSS pins Apple's real
+        root for its own downloads and hands mpv and ffmpeg a certificate bundle of every
+        Windows-trusted root plus Apple's.
       </p>
     `;
+    for (const btn of p.querySelectorAll('[data-open]')) {
+      btn.addEventListener('click', () => Bridge.send('openFolder', { which: btn.dataset.open }));
+    }
+  }
+
+  /** "CTRL+ALT+S" or "Alt+Ctrl+S" (what a .lnk reports) -> "Ctrl+Alt+S". */
+  function formatHotkey(text) {
+    if (!text) return '';
+    const parts = text.split('+').map((p) => p.trim()).filter(Boolean);
+    const mods = ['CTRL', 'ALT', 'SHIFT'].filter((m) => parts.some((p) => p.toUpperCase() === m || (m === 'CTRL' && p.toUpperCase() === 'CONTROL')));
+    const keys = parts.filter((p) => !['CTRL', 'CONTROL', 'ALT', 'SHIFT'].includes(p.toUpperCase()));
+    return mods.map((m) => m[0] + m.slice(1).toLowerCase()).concat(keys).join('+');
+  }
+
+  function setText(id, text) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text === null || text === undefined ? '' : String(text);
   }
 
   function syncSettingsValues() {
@@ -1169,22 +1408,34 @@
     setIfIdle('set-cacheenabled', (el) => { el.checked = !!s.cacheEnabled; });
     setIfIdle('set-cachedir', (el) => { el.value = s.cacheDirectory || ''; });
     setIfIdle('set-ffmpeg', (el) => { el.value = s.ffmpegPath || ''; });
-    setIfIdle('set-budget', (el) => { el.value = s.cacheBudgetGb; });
-    const readout = document.getElementById('set-budget-readout');
-    if (readout) readout.textContent = `${Math.round(s.cacheBudgetGb)} GB`;
-
-    const caps = document.getElementById('preview-caps');
-    if (caps) {
-      const c = s.previewCapabilities || {};
-      caps.textContent = c.ffmpegAvailable
-        ? 'ffmpeg found \u2014 hover clips enabled.'
-        : 'ffmpeg not found \u2014 remote/catalogue thumbnails and tinted placeholders only, no hover clips.';
+    setIfIdle('set-budget', (el) => {
+      el.max = String(Math.max(500, Math.ceil(s.cacheBudgetGb)));
+      el.value = s.cacheBudgetGb;
+      setText('set-budget-readout', `${Math.round(s.cacheBudgetGb)} GB`);
+    });
+    setIfIdle('set-shortcut-desktop', (el) => { el.checked = !!s.shortcutDesktop; });
+    setIfIdle('set-shortcut-startmenu', (el) => { el.checked = !!s.shortcutStartMenu; });
+    setIfIdle('set-hotkey', (el) => { el.value = formatHotkey(s.hotkey); });
+    const hasShortcut = !!(s.shortcutDesktop || s.shortcutStartMenu);
+    for (const id of ['set-hotkey', 'hotkey-clear']) {
+      const el = document.getElementById(id);
+      if (el) el.disabled = !hasShortcut;
     }
 
-    const aboutCacheDir = document.getElementById('about-cachedir');
-    if (aboutCacheDir) aboutCacheDir.textContent = s.cacheDirectory || '(default)';
-    const aboutFfmpeg = document.getElementById('about-ffmpeg');
-    if (aboutFfmpeg) aboutFfmpeg.textContent = s.ffmpegPath || '(search PATH)';
+    const c = s.previewCapabilities || {};
+    setText('preview-caps', c.ffmpegAvailable
+      ? `ffmpeg found${c.ffmpegPath ? ' at ' + c.ffmpegPath : ''} \u2014 hover clips are on.`
+      : 'ffmpeg not found \u2014 stills come from the catalogues\u2019 thumbnails and there are no hover clips.');
+
+    const a = Store.about || {};
+    setText('about-version', a.version);
+    setText('about-mpv', a.mpvVersion);
+    setText('about-data', a.dataFolder);
+    setText('about-settings', a.settingsFile);
+    setText('about-log', a.logFile);
+    setText('about-mpvlog', a.mpvLog);
+    setText('about-cache', a.cacheFolder);
+    setText('about-previews', a.previewsFolder);
 
     renderFolderList();
     renderSourceToggles();
@@ -1193,8 +1444,8 @@
 
   function renderCacheUsage() {
     const bar = document.getElementById('cache-bar');
-    if (!bar || !Store.cacheStats || !Store.settings) return;
-    const { pinnedBytes, rollingBytes, budgetBytes, freeDiskBytes } = Store.cacheStats;
+    if (!bar || !Store.cacheStats) return;
+    const { pinnedBytes, rollingBytes, budgetBytes, freeDiskBytes, pinnedFiles, rollingFiles, pendingPins, ownsPins } = Store.cacheStats;
     const budget = budgetBytes || 1;
     const pinnedPct = Math.min(100, (pinnedBytes / budget) * 100);
     const rollingPct = Math.min(100 - pinnedPct, (rollingBytes / budget) * 100);
@@ -1204,35 +1455,70 @@
       `<div class="seg-rolling" style="width:${rollingPct}%"></div>` +
       `<div class="seg-free" style="width:${freePct}%"></div>`;
 
-    const legendFree = document.getElementById('cache-legend-free');
-    if (legendFree) {
-      legendFree.textContent =
-        `${formatBytes(pinnedBytes)} kept + ${formatBytes(rollingBytes)} rolling of ${formatBytes(budgetBytes)} \u00b7 ` +
-        `${formatBytes(freeDiskBytes)} free on disk`;
-    }
+    setText('cache-legend-free',
+      `${formatBytes(pinnedBytes)} kept + ${formatBytes(rollingBytes)} rolling of ${formatBytes(budgetBytes)} \u00b7 ` +
+      `${formatBytes(freeDiskBytes)} free on disk`);
+    const pins = [`${(pinnedFiles || 0).toLocaleString()} kept offline`, `${(rollingFiles || 0).toLocaleString()} in the rolling cache`];
+    if (pendingPins) pins.push(`${pendingPins.toLocaleString()} waiting to download${ownsPins === false ? ' (the screen saver is downloading them)' : ''}`);
+    setText('cache-pins', pins.join(' \u00b7 ') + '.');
   }
 
   // ======================================================================================
-  // 13. Toast
+  // 13. Toasts and the confirm dialog
   // ======================================================================================
 
-  function showToast(message, actions) {
+  function showToast(message, opts) {
+    const options = opts || {};
     const host = document.getElementById('toast-host');
     const el = document.createElement('div');
-    el.className = 'toast';
-    el.innerHTML = '<div class="toast-msg"></div><div class="toast-actions"></div>';
+    el.className = `toast toast-${options.level || 'info'}`;
+    el.innerHTML = '<div class="toast-msg"></div><div class="toast-actions"></div><button type="button" class="toast-close" aria-label="Dismiss">\u2715</button>';
     el.querySelector('.toast-msg').textContent = message;
     const actionsEl = el.querySelector('.toast-actions');
-    for (const action of actions || []) {
+    const remove = () => { if (el.parentElement) { el.remove(); schedulePanelUpdate(); } };
+    for (const action of options.actions || []) {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'btn';
       btn.textContent = action.label;
-      btn.addEventListener('click', () => { action.onClick(); el.remove(); });
+      btn.addEventListener('click', () => { action.onClick(); remove(); });
       actionsEl.appendChild(btn);
     }
+    if (!actionsEl.children.length) actionsEl.remove();
+    el.querySelector('.toast-close').addEventListener('click', remove);
     host.appendChild(el);
-    setTimeout(() => { if (el.parentElement) el.remove(); }, 15000);
+    schedulePanelUpdate();
+    setTimeout(remove, options.actions && options.actions.length ? 20000 : options.level === 'error' ? 12000 : 6000);
+  }
+
+  /** An in-page modal (a native confirm() would also work, but this one hides the native
+   *  preview panel and matches the theme). Resolves to the chosen button's value, or null. */
+  function confirmDialog(message, buttons) {
+    return new Promise((resolve) => {
+      const overlay = document.getElementById('confirm-overlay');
+      const actions = document.getElementById('confirm-actions');
+      document.getElementById('confirm-message').textContent = message;
+      actions.innerHTML = '';
+      const finish = (value) => {
+        overlay.classList.add('hidden');
+        document.removeEventListener('keydown', onKey, true);
+        schedulePanelUpdate();
+        resolve(value);
+      };
+      const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); finish(null); } };
+      for (const b of buttons) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn' + (b.accent ? ' btn-accent' : '') + (b.danger ? ' btn-danger' : '');
+        btn.textContent = b.label;
+        btn.addEventListener('click', () => finish(b.value));
+        actions.appendChild(btn);
+      }
+      document.addEventListener('keydown', onKey, true);
+      overlay.classList.remove('hidden');
+      updatePanel();
+      actions.firstChild?.focus();
+    });
   }
 
   // ======================================================================================
@@ -1240,7 +1526,6 @@
   // ======================================================================================
 
   function pruneRemovedClips() {
-    for (const key of Array.from(Store.state.keys())) if (!Store.clips.has(key)) Store.state.delete(key);
     for (const key of Array.from(Store.preview.keys())) if (!Store.clips.has(key)) Store.preview.delete(key);
     for (const key of Array.from(Store.selection)) if (!Store.clips.has(key)) Store.selection.delete(key);
     for (const key of Array.from(Store.requestedStill)) if (!Store.clips.has(key)) Store.requestedStill.delete(key);
@@ -1248,85 +1533,120 @@
 
   function registerHostHandlers() {
     Bridge.on('catalog', (msg) => {
+      // Sent after `ready` (start-up or a reload) and after every refresh or folder change. A
+      // full stateDelta always follows, so state starts from scratch; previews and the
+      // selection survive for clips that are still there.
       Store.clips.clear();
+      Store.state.clear();
       Store.order = [];
       for (const clip of msg.clips) { Store.clips.set(clip.key, clip); Store.order.push(clip.key); }
+      Store.catalogLoaded = true;
       pruneRemovedClips();
-      showRefreshSpinner(false);
-      if (Store.detailKey && !Store.clips.has(Store.detailKey)) closeDetail();
+      setRefreshing(false);
+      if (Store.detailKey && !Store.clips.has(Store.detailKey)) Store.selection.delete(Store.detailKey);
       onFiltersChanged();
+      applySelectionChanged();
+      if (Store.detailKey) openDetail(Store.detailKey);
       if (settingsBuilt) renderSourceToggles();
     });
 
     Bridge.on('stateDelta', (msg) => {
+      const changed = [];
       let flagsChanged = false;
+      let sortChanged = false;
       for (const [key, patch] of Object.entries(msg.clips)) {
-        const prev = Store.state.get(key) || {};
-        const next = Object.assign({}, prev, patch);
+        const prev = Store.state.get(key);
+        const next = Object.assign({}, prev || {}, patch);
         Store.state.set(key, next);
-        if (prev.inRotation !== next.inRotation || prev.pinned !== next.pinned ||
-            prev.cached !== next.cached || prev.health !== next.health || prev.isNew !== next.isNew) {
-          flagsChanged = true;
-        }
-        updateCardVisuals(key);
-        if (Store.detailKey === key) {
-          document.getElementById('toggle-rotation').checked = !!next.inRotation;
-          document.getElementById('toggle-pin').checked = !!next.pinned;
-          renderDetailDownload(next);
-          renderDetailTags(key);
-        }
+        changed.push(key);
+        if (stateFlags(prev) !== stateFlags(next)) flagsChanged = true;
+        if (Store.sort.field === 'lastPlayed' && (prev || {}).lastPlayedUtc !== next.lastPlayedUtc) sortChanged = true;
+        if (Store.detailKey === key) renderDetailState(key);
       }
-      if (flagsChanged) {
+      if (flagsChanged || sortChanged) {
         recomputeVisible();
-        buildGrid();
-        renderFacets();
-        applySelectionChanged();
+        refreshGrid(changed);
+        if (flagsChanged) renderFacets();
+        if (settingsBuilt && flagsChanged) renderSourceToggles();
+      } else {
+        for (const key of changed) updateCardVisuals(key);
       }
     });
 
     Bridge.on('previewReady', (msg) => {
       const pv = Store.preview.get(msg.key) || {};
-      pv[msg.kind.toLowerCase()] = {
+      const kind = msg.kind.toLowerCase();
+      pv[kind] = {
         status: msg.status,
         url: msg.status === 'Ready' ? msg.url : null,
         color: msg.placeholderColor,
       };
       Store.preview.set(msg.key, pv);
-      updateCardThumb(msg.key);
+      if (kind === 'still') updateCardThumb(msg.key);
       if (Store.detailKey === msg.key) updateDetailPreview();
-      if (msg.kind === 'Hover' && hoverKey === msg.key && msg.status === 'Ready' && msg.url) {
+      if (kind === 'hover') {
+        if (hoverPendingKey === msg.key) hoverPendingKey = null;
         const cardEl = cardEls.get(msg.key);
-        if (cardEl) showHoverVideo(cardEl, msg.url);
+        cardEl?.querySelector('.thumb')?.classList.remove('is-loading');
+        if (hoverKey === msg.key && msg.status === 'Ready' && msg.url && cardEl) showHoverVideo(cardEl, msg.url);
       }
     });
 
     Bridge.on('settings', (msg) => {
       Store.settings = msg.values;
+      Store.sources = msg.sources || [];
+      Store.about = msg.about || null;
       if (settingsBuilt) syncSettingsValues();
       else if (!document.getElementById('settings-overlay').classList.contains('hidden')) buildSettingsPanes();
-      renderCacheUsage();
     });
 
     Bridge.on('cacheStats', (msg) => {
       Store.cacheStats = msg;
       renderCacheUsage();
+      if (Store.detailKey) renderDetailDownload(Store.state.get(Store.detailKey) || {});
     });
 
     Bridge.on('pinRefused', (msg) => {
       showToast(
-        `Keeping ${msg.keys.length} clip(s) offline needs ${msg.requiredGb} GB, over the ${msg.budgetGb} GB limit.`,
-        [
-          { label: `Raise limit to ${msg.requiredGb} GB`, onClick: () => {
-            Bridge.send('saveSettings', { patch: { cacheBudgetGb: msg.requiredGb } });
-            Bridge.send('setPinned', { keys: msg.keys, value: true });
-          } },
-          { label: 'Cancel', onClick: () => {} },
-        ],
-      );
+        `Keeping ${msg.keys.length.toLocaleString()} clip${msg.keys.length === 1 ? '' : 's'} offline needs ${msg.requiredGb} GB, ` +
+        `over the ${msg.budgetGb} GB cache limit (${msg.shortfallGb} GB short).`,
+        {
+          level: 'warning',
+          actions: [
+            { label: `Raise limit to ${msg.requiredGb} GB`, onClick: () => {
+              Bridge.send('saveSettings', { patch: { cacheBudgetGb: msg.requiredGb } });
+              Bridge.send('setPinned', { keys: msg.keys, value: true });
+            } },
+            { label: 'Cancel', onClick: () => {} },
+          ],
+        });
+      // The switch flipped on optimistically; put it back.
+      if (Store.detailKey) renderDetailState(Store.detailKey);
     });
 
-    // Shape not finalized per the contract; just keep the spinner alive until `catalog` lands.
-    Bridge.on('refreshProgress', () => showRefreshSpinner(true));
+    Bridge.on('refreshProgress', (msg) => {
+      if (msg.running) {
+        const name = sourceName(msg.sourceId) || msg.sourceId || '';
+        const count = msg.total ? ` ${(msg.done || 0).toLocaleString()}/${msg.total.toLocaleString()}` : '';
+        setRefreshing(true, `${name}${msg.stage ? ': ' + msg.stage : ''}${count}`);
+        return;
+      }
+      setRefreshing(false);
+      if (msg.error) {
+        showToast(`Catalogue refresh failed: ${msg.error}`, { level: 'error' });
+        return;
+      }
+      const sources = msg.sources || [];
+      const added = sources.reduce((n, s) => n + (s.added || 0), 0);
+      const removed = sources.reduce((n, s) => n + (s.removed || 0), 0);
+      const failed = sources.filter((s) => !s.succeeded);
+      let text = `Catalogues refreshed: ${added.toLocaleString()} new clip${added === 1 ? '' : 's'}` +
+        (removed ? `, ${removed.toLocaleString()} gone` : '') + '.';
+      if (failed.length) text += ` Failed: ${failed.map((s) => `${sourceName(s.sourceId) || s.sourceId}${s.error ? ' (' + s.error + ')' : ''}`).join(', ')}.`;
+      showToast(text, { level: failed.length ? 'warning' : 'info' });
+    });
+
+    Bridge.on('notice', (msg) => showToast(msg.text, { level: msg.level }));
   }
 
   // ======================================================================================
@@ -1369,14 +1689,28 @@
     document.getElementById('toggle-pin').addEventListener('change', (e) => {
       if (Store.detailKey) requestPin([Store.detailKey], e.target.checked);
     });
-    window.addEventListener('resize', () => { if (Store.detailKey) sendPanelRect(); });
-    document.getElementById('detail').addEventListener('scroll', () => { if (Store.detailKey) sendPanelRect(); });
+    document.getElementById('detail-download-retry').addEventListener('click', () => Bridge.send('retryDownloads', {}));
+
+    // Anything that can move or cover the video box re-sends panelRect (coalesced per frame).
+    window.addEventListener('resize', schedulePanelUpdate);
+    document.getElementById('detail').addEventListener('scroll', schedulePanelUpdate, { passive: true });
+    document.addEventListener('visibilitychange', schedulePanelUpdate);
+    if (window.ResizeObserver) {
+      const ro = new ResizeObserver(schedulePanelUpdate);
+      ro.observe(document.getElementById('detail-preview-rect'));
+      ro.observe(document.getElementById('detail'));
+    }
   }
 
   function wireGlobalKeys() {
     document.addEventListener('keydown', (e) => {
       if (e.key !== 'Escape') return;
       if (!document.getElementById('settings-overlay').classList.contains('hidden')) { closeSettings(); return; }
+      if (document.getElementById('sidebar').classList.contains('is-open')) {
+        document.getElementById('sidebar').classList.remove('is-open');
+        schedulePanelUpdate();
+        return;
+      }
       if (Store.selection.size > 0) clearSelection();
     });
   }
@@ -1390,7 +1724,15 @@
     wireSettingsStatic();
     wireGlobalKeys();
     registerHostHandlers();
+    updateGridStatus();
+    // Last: every handler is in place before the host is told it may start posting.
+    Bridge.connect();
+    // After a reload the host may still be playing what the old page selected, in a panel
+    // placed for the old layout: start from nothing selected and the panel hidden.
+    Bridge.send('selectClip', { key: null });
+    updatePanel();
   }
 
-  document.addEventListener('DOMContentLoaded', init);
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
 })();

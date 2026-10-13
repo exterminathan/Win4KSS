@@ -369,11 +369,12 @@ public sealed class BrowserBridge : IDisposable
         }
 
         // From the cache when it is there, so flicking through the grid does not pull hundreds
-        // of megabytes per click; otherwise mpv streams it (escaped: Clip.PlayableUrl).
+        // of megabytes per click; otherwise mpv streams it (escaped: Clip.PlayableUrl). Not
+        // recorded as a play: previewing would reorder LRU and the page's "last played" sort.
         string url;
         try
         {
-            url = _cache.Resolve(clip);
+            url = _cache.Resolve(clip, recordPlay: false);
         }
         catch (Exception ex)
         {
@@ -923,11 +924,18 @@ public sealed class BrowserBridge : IDisposable
     // ---- state -------------------------------------------------------------------------------
 
     /// <summary>What the page should show for one clip right now.</summary>
-    internal ClipStateDto StateOf(ClipInfo info)
+    internal ClipStateDto StateOf(ClipInfo info, PlayHistory? history = null)
     {
         var cached = false;
-        if (!info.IsLocal && ClipResolver.PlayableClip(info, _settings.Quality) is { } clip)
-            cached = _cache.IsCached(clip.Url);
+        DateTime? lastPlayed = null;
+        if (!info.IsLocal)
+        {
+            history ??= PlayHistory.From(_cache);
+            var clip = ClipResolver.PlayableClip(info, _settings.Quality);
+            if (clip is not null)
+                cached = _cache.IsCached(clip.Url);
+            lastPlayed = history.LastPlayed(info.Key, clip is null ? null : VideoCache.KeyFor(clip.Url));
+        }
 
         return new ClipStateDto(
             Rotation.IsInRotation(_settings, info.Key),
@@ -935,7 +943,55 @@ public sealed class BrowserBridge : IDisposable
             cached,
             DownloadDto.From(_queue.Get(info.Key)),
             ClipHealth.IsUnhealthy(_settings, info.Key) ? ClipStateDto.Unhealthy : ClipStateDto.Ok,
-            TagBuilder.IsNew(info, _time.GetUtcNow().UtcDateTime));
+            TagBuilder.IsNew(info, _time.GetUtcNow().UtcDateTime),
+            lastPlayed);
+    }
+
+    /// <summary>
+    /// When each clip was last played, from the cache index (<see cref="CacheEntry.LastPlayedUtc"/>,
+    /// which is also stamped when a file is stored). Only cached clips have one: the index is
+    /// the only play history there is. Read once per flush, not once per clip.
+    /// </summary>
+    internal sealed class PlayHistory
+    {
+        private readonly Dictionary<string, DateTime> _byClip = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, DateTime> _byFile = new(StringComparer.OrdinalIgnoreCase);
+
+        public static PlayHistory From(VideoCache cache)
+        {
+            var history = new PlayHistory();
+            foreach (var entry in cache.Entries())
+            {
+                if (entry.LastPlayedUtc == default)
+                    continue;
+                var played = entry.LastPlayedUtc.Kind switch
+                {
+                    DateTimeKind.Utc => entry.LastPlayedUtc,
+                    DateTimeKind.Local => entry.LastPlayedUtc.ToUniversalTime(),
+                    _ => DateTime.SpecifyKind(entry.LastPlayedUtc, DateTimeKind.Utc),
+                };
+                // Files cached before index v2 have no clip key; they match by file name instead.
+                if (!string.IsNullOrEmpty(entry.ClipKey))
+                    KeepLatest(history._byClip, entry.ClipKey, played);
+                KeepLatest(history._byFile, entry.Key, played);
+            }
+            return history;
+        }
+
+        /// <param name="fileKey">The current rendition's cache file name, if it has one.</param>
+        public DateTime? LastPlayed(string clipKey, string? fileKey)
+        {
+            DateTime? latest = _byClip.TryGetValue(clipKey, out var byClip) ? byClip : null;
+            if (fileKey is not null && _byFile.TryGetValue(fileKey, out var byFile) && (latest is null || byFile > latest))
+                latest = byFile;
+            return latest;
+        }
+
+        private static void KeepLatest(Dictionary<string, DateTime> map, string key, DateTime value)
+        {
+            if (!map.TryGetValue(key, out var existing) || value > existing)
+                map[key] = value;
+        }
     }
 
     private void MarkDirty(IEnumerable<string> keys) => _dirty.UnionWith(keys);
@@ -966,9 +1022,10 @@ public sealed class BrowserBridge : IDisposable
                 : _dirty.Select(k => _byKey.GetValueOrDefault(k)).OfType<ClipInfo>();
 
             var changed = new Dictionary<string, ClipStateDto>(StringComparer.Ordinal);
+            var history = PlayHistory.From(_cache);
             foreach (var info in candidates)
             {
-                var state = StateOf(info);
+                var state = StateOf(info, history);
                 if (_sent.TryGetValue(info.Key, out var previous) && previous == state)
                     continue;
                 _sent[info.Key] = state;
