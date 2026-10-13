@@ -1,9 +1,11 @@
 # Browser ↔ host bridge contract (Phase E)
 
 This is the interface the Phase E browser UI (WebView2 page) is built against. It
-reflects the **real C# types already in this repo** at commit `bcdc261` (Phases A–C,
-plus Phase D's `MediaPreviewService`), not placeholders. Where a field doesn't exist
-yet (Phase F, not landed), it's marked **(pending)** — design for its absence.
+reflects the **real C# types already in this repo** — Phases A–C, Phase D's
+`MediaPreviewService`, and Phase F's settings-v2 contract fields are all landed on
+`main`. Corrected 2026-10-13 against win4kscreensavers-67's actual implementation;
+earlier enum/field names in this doc (`Verifying`, `Canceled`, `IMediaPreviewService`,
+bare preview `path`) were wrong — this revision is the source of truth.
 
 See `squishy-teacup-plan.md` for the full plan this implements.
 
@@ -21,9 +23,17 @@ later is mechanical.
 - `src/Win4K.Core/Catalogs/TagBuilder.cs` — `TagFacet`, `ClipTag`, `ClipState`, `Values.*`
 - `src/Win4K.Core/Catalogs/ClipLibrary.cs` — loads all clips from all sources
 - `src/Win4K.Core/Caching/PinManager.cs` — `PinCheck`, `Pin`/`Unpin`/`CanPin`/`IsPinned`/`Pinned`
-- `src/Win4K.Core/Caching/DownloadQueue.cs` — `DownloadStatus`, `DownloadState`, `DownloadPriority`, `Enqueue`/`Cancel`/`Snapshot`/`Get`
-- `src/Win4K.Core/Media/MediaPreviewService.cs` + `PreviewIndex.cs` — `PreviewState`, `PreviewKind`, `PreviewCapabilities`, `PreviewStats`, `Request`/`Get`/`Stats`, `VirtualHost = "previews.win4k"`
-- `src/Win4K.Core/Settings/AppSettings.cs` — current fields (v1); `RotationKeys`/`AutoAddSources`/`KnownKeys` are **(pending)**, added in Phase F
+- `src/Win4K.Core/Caching/DownloadQueue.cs` — `DownloadStatus`, `DownloadState`, `DownloadPriority`, `Enqueue`/`EnqueuePlayed`/`Cancel`/`RetryFailed`/`Snapshot`/`Get`
+- `src/Win4K.Core/Media/MediaPreviewService.cs` + `PreviewIndex.cs` — `PreviewState`, `PreviewKind`, `PreviewCapabilities`, `PreviewStats`, `Request`/`Get`/`Stats`, `VirtualHost = "previews.win4k"`. **No `IMediaPreviewService` interface exists — the concrete class is the contract.**
+- `src/Win4K.Core/Playback/ClipHealth.cs` — `ClipHealth.IsUnhealthy(settings, key)`, static, `FailedClips` count ≥ 3. There is no health enum.
+- `src/Win4K.Core/Catalogs/CatalogRefresher.cs` — `RefreshAsync(sourceIds?, IProgress<CatalogRefreshProgress>?, ct)`
+- `src/Win4K.Core/Settings/AppSettings.cs` — **v2, landed.** `RotationKeys`, `AutoAddSources`, `KnownKeys` are real `HashSet<string>` fields keyed by `ClipInfo.Key` (same value as `Clip.Id`), alongside the existing `KeptOffline`. `FfmpegPath` is `string?`. `FailedClips` is `Dictionary<string,int>`. `SelectedClipIds`, `EnabledCatalogIds` and `SourceMode` are retired by the v1→v2 migration — don't build UI against them.
+
+### Exact enum members (don't guess — these were wrong in an earlier draft of this doc)
+- `DownloadState`: `Queued, Waiting, Downloading, Done, Failed, Cancelled` — no `Verifying`; `Waiting` means another process holds the partial; note the double-L spelling of `Cancelled`.
+- `DownloadPriority`: `Background` (lowest) `< DownloadAhead < Pin`.
+- `PreviewStatus`: `Missing, Pending, Ready, Placeholder, Failed, Unavailable`. `Placeholder` carries only `PlaceholderColor`, no file. `Unavailable` = a hover clip request with no ffmpeg available.
+- `PreviewKind`: `None, Still, Hover, Both` (flags).
 
 ## Transport
 
@@ -94,17 +104,18 @@ Subject, TimeOfDay, Resolution, Aspect, DynamicRange, Duration, Codec, Licence, 
   }
 }
 ```
-- `download.state` mirrors `DownloadState` (`Queued|Downloading|Verifying|Done|Failed|Canceled`).
-- `health` mirrors `ClipHealth` state naming — `Ok` or `Unhealthy` (3 failed sessions, see plan Phase A §3). Use `Unhealthy` to render the tag.
+- `download.state` mirrors `DownloadState` exactly: `Queued|Waiting|Downloading|Done|Failed|Cancelled`.
+- `health` is derived by the host from `ClipHealth.IsUnhealthy(settings, key)` and sent as the string `"Ok"` or `"Unhealthy"` (there's no C# health enum — this mapping happens in `BrowserBridge.cs`). Use `Unhealthy` to render the tag.
 - This message can be partial (only changed clips) or full; the page must merge by key, never replace the whole map.
 
 ### `previewReady`
 ```json
-{ "type": "previewReady", "key": "apple:7825C73A-...", "kind": "Still", "status": "Ready", "path": "a1b2c3d4.jpg", "placeholderColor": "#2b4a3d" }
+{ "type": "previewReady", "key": "apple:7825C73A-...", "kind": "Still", "status": "Ready", "url": "https://previews.win4k/a1b2c3d4.jpg?v=3", "placeholderColor": "#2b4a3d" }
 ```
-- `path` is relative to `https://previews.win4k/`. `status` mirrors `PreviewStatus` (`Pending|Ready|Failed|Unavailable`).
+- Use the full `url` as given (`PreviewState.Url`, already `https://previews.win4k/<file>?v=<Version>` — the `?v=` query is cache-busting on regeneration; don't strip it or construct the URL yourself from a bare path).
+- `status` mirrors `PreviewStatus` exactly: `Missing|Pending|Ready|Placeholder|Failed|Unavailable`.
 - `kind` is `"Still"` or `"Hover"`.
-- On `Failed`/`Unavailable`/null `path`, render a placeholder tinted `placeholderColor` (see `MediaPreviewService.PlaceholderColor`, keyed by category).
+- On `Placeholder`/`Failed`/`Unavailable`/`Missing` (any status other than `Ready`), there is no usable `url` — render a placeholder tinted `placeholderColor` (`MediaPreviewService.PlaceholderColor`, keyed by category) instead.
 
 ### `settings`
 ```json
@@ -118,9 +129,8 @@ Subject, TimeOfDay, Resolution, Aspect, DynamicRange, Duration, Codec, Licence, 
   }
 }
 ```
-`autoAddSources` is **(pending)** — Phase F adds the real field; until then the host may
-synthesize it from `enabledCatalogIds`. Build the settings panel's per-source toggle
-against the field name `autoAddSources` regardless.
+`autoAddSources` is a real field now (`AppSettings.AutoAddSources`, landed in Phase F)
+— the host sends it as-is, no synthesizing needed.
 
 ### `cacheStats`
 ```json
@@ -135,7 +145,7 @@ against the field name `autoAddSources` regardless.
 | `setPinned` | `{ keys: string[], value: bool }` | `PinManager.Pin`/`Unpin`; on `Pin`, host first runs `CanPin` and may reply with a one-off `pinRefused` message (see below) instead of a `stateDelta` |
 | `selectClip` | `{ key: string \| null }` | drives the native mpv preview panel the host positions over the detail pane's video rect (see `panelRect` below) |
 | `panelRect` | `{ x, y, width, height, visible: bool }` | page tells host where to position the native preview `HWND`, in page-relative CSS pixels; sent on resize/scroll/select |
-| `requestPreviews` | `{ keys: string[], kinds: "Still"\|"Hover"\|"Both" }` | `MediaPreviewService.Request` |
+| `requestPreviews` | `{ keys: string[], kinds: "Still"\|"Hover"\|"Both" }` | `MediaPreviewService.Request(keys, PreviewKind)` — `kinds` string maps 1:1 to the flag enum member name |
 | `saveSettings` | `{ patch: { ...partial of settings.values } }` | debounced write to `AppSettings` |
 | `refreshCatalogs` | `{}` | `CatalogRefresher` run; host streams progress via a `refreshProgress` message (not detailed yet — show an indeterminate spinner until the next `catalog` arrives) |
 | `startNow` | `{}` | same as today's "Start now" |
@@ -163,13 +173,18 @@ Shape mirrors `PinCheck` (`RequiredGb`, budget, `ShortfallBytes`). Page should o
    that shim. They must not import the shim in production — it's dev-only, loaded by a
    separate `dev.html` harness, not `index.html`.
 4. Also write `src/Win4K.ScreenSaver/Browser/BrowserBridge.cs` implementing the message
-   types above against the real C# types, calling into `ClipLibrary`, `PinManager`,
-   `DownloadQueue`, `MediaPreviewService`, `AppSettings`. This **will not compile** on
-   this machine (net10.0-windows, WebView2) — that's expected. It gets compiled and
-   wired to a real `BrowserForm` locally. Keep it a plain class with no WinForms/WebView2
-   types in its public surface beyond `string SendToPage(string json)` /
-   `void OnPageMessage(string json)` methods, so it's easy to unit test later with
-   `Win4K.Tests`.
+   types above against the real C# types. This **will not compile** on this machine
+   (net10.0-windows, WebView2) — that's expected. It gets compiled and wired to a real
+   `BrowserForm` locally. Keep it a plain class with no WinForms/WebView2 types in its
+   public surface beyond `string SendToPage(string json)` / `void OnPageMessage(string
+   json)` methods, so it's easy to unit test later with `Win4K.Tests`. Construction
+   roughly follows:
+   - `ClipLibrary.LoadAsync(settings?)` → `IReadOnlyList<ClipInfo>` for the `catalog` message.
+   - `TagBuilder.Build(clip, ClipState flags, now)` for each clip's `tags`.
+   - `new PinManager(settings, cache, queue, save?)`, then `SetCatalog`, `SyncPins`, `CanPin`/`Pin`/`Unpin`/`IsPinned`.
+   - `new DownloadQueue(cache, options?)`, `Enqueue`/`EnqueuePlayed`/`Cancel`/`Snapshot`/`Get`; subscribe `JobChanged`/`Progress`/`OwnershipChanged` (any thread — marshal before touching WebView2).
+   - `new MediaPreviewService(settings, cache?, options?)`, then `SetCatalog`, `Start(backgroundFill: true)`; subscribe `PreviewUpdated` (worker thread — marshal) → emit `previewReady`.
+   - `cache.Stats()` (pinned/rolling/free bytes) for `cacheStats`; subscribe `cache.Changed` (background thread — marshal).
+   - `CatalogRefresher.RefreshAsync(sourceIds?, progress?, ct)` for `refreshCatalogs`.
 5. Leave `TODO(local)` comments anywhere you had to guess at a detail you couldn't
-   verify from the source (e.g. exact `ClipHealth` enum member names) — grep for them
-   before merging.
+   verify from the source — grep for them before merging.
