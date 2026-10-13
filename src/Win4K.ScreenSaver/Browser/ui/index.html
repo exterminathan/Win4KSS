@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Win4KSS</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<!--
+  This page is served by BrowserForm from an embedded resource, through
+  SetVirtualHostNameToFolderMapping("app.win4k", ...) -- see Browser/BrowserForm.cs. It
+  talks to the host only through window.chrome.webview (PostWebMessageAsJson /
+  WebMessageReceived); the exact message shapes are in docs/browser-bridge-contract.md.
+
+  Almost everything below is static scaffolding. The dynamic content -- facet lists, the
+  card grid, the detail pane, the settings tabs -- is built by app.js so this file and
+  docs/browser-mock/dev.html (the no-WebView2 dev harness) can share one body markup with
+  no templating step. Do not add a reference to the dev shim here; dev.html loads it
+  separately, before this same app.js.
+-->
+<div id="app" class="app">
+
+  <header id="toolbar" class="toolbar">
+    <div class="toolbar-group toolbar-search">
+      <input id="search-input" type="search" placeholder="Search clips…" aria-label="Search clips" autocomplete="off">
+    </div>
+
+    <div class="toolbar-group">
+      <label class="toolbar-label" for="sort-select">Sort</label>
+      <select id="sort-select" aria-label="Sort clips by">
+        <option value="title:asc">Name (A–Z)</option>
+        <option value="title:desc">Name (Z–A)</option>
+        <option value="durationSeconds:desc">Duration (longest)</option>
+        <option value="durationSeconds:asc">Duration (shortest)</option>
+        <option value="sizeBytes:desc">Size (largest)</option>
+        <option value="sizeBytes:asc">Size (smallest)</option>
+        <option value="resolution:desc">Resolution (highest)</option>
+        <option value="addedUtc:desc" selected>Date added (newest)</option>
+        <option value="addedUtc:asc">Date added (oldest)</option>
+        <option value="lastPlayed:desc">Last played</option>
+        <option value="source:asc">Source</option>
+      </select>
+    </div>
+
+    <div class="toolbar-group toolbar-viewsize" role="group" aria-label="Card size">
+      <button type="button" class="icon-btn viewsize-btn" data-size="s" title="Small cards">S</button>
+      <button type="button" class="icon-btn viewsize-btn is-active" data-size="m" title="Medium cards">M</button>
+      <button type="button" class="icon-btn viewsize-btn" data-size="l" title="Large cards">L</button>
+    </div>
+
+    <button id="select-all-filtered" type="button" class="btn">Select all filtered</button>
+
+    <div class="toolbar-spacer"></div>
+
+    <div id="refresh-spinner" class="spinner hidden" title="Refreshing catalogues…" aria-hidden="true"></div>
+    <button id="refresh-catalogs" type="button" class="btn" title="Re-harvest the auto catalogues">Refresh catalogues</button>
+    <button id="start-now" type="button" class="btn btn-accent">Start now</button>
+    <button id="open-settings" type="button" class="icon-btn" title="Settings" aria-label="Open settings">⚙</button>
+  </header>
+
+  <div id="body" class="body">
+    <aside id="sidebar" class="sidebar" aria-label="Filters">
+      <div class="sidebar-head">
+        <h2>Filters</h2>
+        <button id="clear-filters" type="button" class="link-btn">Clear all</button>
+      </div>
+      <div id="facet-list" class="facet-list"><!-- populated by app.js: one .facet-group per TagFacet --></div>
+    </aside>
+
+    <main id="grid-wrap" class="grid-wrap">
+      <div id="grid-status" class="grid-status" aria-live="polite"></div>
+      <div id="grid" class="grid grid-m" role="list"><!-- populated by app.js: one .card per clip --></div>
+      <div id="grid-empty" class="grid-empty hidden">No clips match these filters.</div>
+    </main>
+
+    <aside id="detail" class="detail hidden" aria-label="Clip detail">
+      <button id="detail-close" type="button" class="icon-btn detail-close" aria-label="Close detail pane">✕</button>
+
+      <div id="detail-preview" class="detail-preview">
+        <!--
+          detail-preview-rect is the exact element BrowserForm positions its native mpv
+          child HWND over (panelRect messages carry its on-screen rect). The <img>/<video>
+          inside it are a fallback: visible in the dev harness (no native panel exists in
+          a plain browser) and as a first-paint placeholder in production before mpv's
+          panel paints over it, so the pane is never empty.
+        -->
+        <div id="detail-preview-rect" class="detail-preview-rect">
+          <img id="detail-preview-img" class="detail-preview-media hidden" alt="">
+          <video id="detail-preview-video" class="detail-preview-media hidden" muted loop playsinline></video>
+          <div id="detail-preview-placeholder" class="detail-preview-placeholder"></div>
+        </div>
+      </div>
+
+      <div class="detail-body">
+        <h2 id="detail-title" class="detail-title"></h2>
+        <div id="detail-meta" class="detail-meta"></div>
+
+        <div id="detail-captions" class="detail-captions"></div>
+        <p id="detail-description" class="detail-description"></p>
+
+        <div class="detail-toggles">
+          <label class="switch-row">
+            <span class="switch">
+              <input id="toggle-rotation" type="checkbox">
+              <span class="switch-track"></span>
+            </span>
+            <span class="switch-label">In rotation</span>
+          </label>
+          <label class="switch-row">
+            <span class="switch">
+              <input id="toggle-pin" type="checkbox">
+              <span class="switch-track"></span>
+            </span>
+            <span class="switch-label">Keep offline</span>
+          </label>
+          <div id="detail-download" class="detail-download hidden"></div>
+        </div>
+
+        <div id="detail-tags" class="detail-tags"></div>
+      </div>
+    </aside>
+  </div>
+
+  <div id="bulk-bar" class="bulk-bar hidden">
+    <span id="bulk-count" class="bulk-count"></span>
+    <div class="bulk-actions">
+      <button id="bulk-rotation-on" type="button" class="btn">Add to rotation</button>
+      <button id="bulk-rotation-off" type="button" class="btn">Remove from rotation</button>
+      <button id="bulk-pin-on" type="button" class="btn">Keep offline</button>
+      <button id="bulk-pin-off" type="button" class="btn">Remove offline</button>
+    </div>
+    <button id="bulk-clear" type="button" class="link-btn">Clear selection</button>
+  </div>
+
+  <div id="settings-overlay" class="overlay hidden" role="dialog" aria-modal="true" aria-label="Settings">
+    <div class="settings-panel">
+      <div class="settings-head">
+        <h2>Settings</h2>
+        <button id="settings-close" type="button" class="icon-btn" aria-label="Close settings">✕</button>
+      </div>
+      <div class="settings-body">
+        <nav id="settings-tabs" class="settings-tabs" role="tablist">
+          <button type="button" class="settings-tab is-active" data-tab="sources" role="tab">Sources</button>
+          <button type="button" class="settings-tab" data-tab="playback" role="tab">Playback</button>
+          <button type="button" class="settings-tab" data-tab="cache" role="tab">Cache</button>
+          <button type="button" class="settings-tab" data-tab="trigger" role="tab">Start now</button>
+          <button type="button" class="settings-tab" data-tab="about" role="tab">About</button>
+        </nav>
+        <div id="settings-panes" class="settings-panes">
+          <section class="settings-pane is-active" data-tab="sources"></section>
+          <section class="settings-pane" data-tab="playback"></section>
+          <section class="settings-pane" data-tab="cache"></section>
+          <section class="settings-pane" data-tab="trigger"></section>
+          <section class="settings-pane" data-tab="about"></section>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast-host" class="toast-host" aria-live="assertive"></div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
