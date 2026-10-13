@@ -8,7 +8,7 @@ Built for one user, on one machine, for personal use.
 
 ## Status
 
-**Built, installed (user scope), and working.** All eight phases complete; clip-browser Phase B (unified clip model + in-app catalogue refresh) Phase C (cache pins, download queue, multi-process safety) and Phase D (`MediaPreviewService`: grid stills + hover clips) and Phase F (settings v2: per-clip rotation) landed 2026-10-13; 419 tests green. `/s`, `/c`, `/p`, `/w` and `/now` all verified against the published build; 4K HEVC streams and plays with `d3d11va` hardware decode, including the settings-dialog live preview.
+**Built, installed (user scope), and working.** All eight phases complete; clip-browser Phase B (unified clip model + in-app catalogue refresh) Phase C (cache pins, download queue, multi-process safety) and Phase D (`MediaPreviewService`: grid stills + hover clips) and Phase F (settings v2: per-clip rotation) landed 2026-10-13, plus the C# half of Phase E (WebView2 clip browser: `BrowserForm` + `BrowserBridge`; `/c` opens it, `SettingsForm` is gone; the page itself, `Browser/ui/`, comes from the UI lane and until it merges a built-in "UI not built" bridge exerciser is served); 481 tests green. `/s`, `/c`, `/p`, `/w` and `/now` all verified against the published build; 4K HEVC streams and plays with `d3d11va` hardware decode, including the settings-dialog live preview.
 
 Installed at `%LOCALAPPDATA%\Programs\Win4KSS\` (renamed from `Win4KAerial` on 2026-10-12 so Screen Saver Settings shows "Win4KSS"; `install-scr.ps1` removes the old files and repoints `SCRNSAVE.EXE`) with Desktop + Start Menu shortcuts bound to `Ctrl+Alt+S`. The full walk-away chain was observed working end to end: shortcut → `StartNow` → Windows launched our saver → 1500 ms manual grace → playing from cache.
 
@@ -35,7 +35,8 @@ Win4KScreensavers/
 │   │   ├── Settings/        AppSettings (JSON)
 │   │   └── AppleTrust.cs, CaBundle.cs, Http.cs, Log.cs, Display.cs, AppPaths.cs
 │   ├── Win4K.ScreenSaver/   WinForms exe → Win4KSS.scr / Win4KSS.exe
-│   │   ├── Program.cs       CLI verbs; SaverForm.cs; SettingsForm.cs
+│   │   ├── Program.cs       CLI verbs (/c → clip browser, single instance); SaverForm.cs; SaverLauncher.cs ("Start now")
+│   │   ├── Browser/         BrowserForm (WebView2 + native mpv preview panel), BrowserBridge (page⇄services, contract: docs/browser-bridge-contract.md), UiAssets; ui/ = the page, embedded by wildcard
 │   │   └── InputDismissWatcher.cs, LaunchContext.cs, PreviewLifetime.cs, ShortcutManager.cs, NativeMethods.cs
 │   └── Win4K.Tests/         xunit (419); Fixtures/ = trimmed upstream samples for the harvesters
 ├── assets/                  fallback-entries.json, apple-root-ca.cer, registry/
@@ -46,7 +47,7 @@ Win4KScreensavers/
 └── PLAN.md                  design + findings
 ```
 
-Runtime state lives in `%LOCALAPPDATA%\Win4KScreensavers\`: `settings.json`, `manifest.json`, `catalogs/`, `ca-bundle.pem`, `win4k.log`, `mpv.log`, `cache/videos`, `cache/partial` (kept across sessions for Range resume; 7-day orphans removed), `cache/cache-index.json`, `cache/queue.json` (pending pins), `previews/` (`<sha1(key)[:16]>.jpg`/`.mp4` + `index.json`; 1 GB LRU, separate from the cache budget; browser only).
+Runtime state lives in `%LOCALAPPDATA%\Win4KScreensavers\`: `settings.json`, `manifest.json`, `catalogs/`, `ca-bundle.pem`, `win4k.log`, `mpv.log`, `cache/videos`, `cache/partial` (kept across sessions for Range resume; 7-day orphans removed), `cache/cache-index.json`, `cache/queue.json` (pending pins), `previews/` (`<sha1(key)[:16]>.jpg`/`.mp4` + `index.json`; 1 GB LRU, separate from the cache budget; browser only), `webview2/` (the browser's WebView2 user data folder).
 
 ## Conventions
 
@@ -55,8 +56,9 @@ Runtime state lives in `%LOCALAPPDATA%\Win4KScreensavers\`: `settings.json`, `ma
 - **Build:** `dotnet build` · **Test:** `dotnet test` · **Run windowed:** `dotnet run --project src/Win4K.ScreenSaver -- /w`
 - **Live network tests** are inert by default: `$env:WIN4K_LIVE_TESTS="1"; dotnet test`
 - **Test isolation:** `TestEnvironment` points `WIN4K_HOME` at a temp dir for the whole run; a test that needs its own app-data root uses `using var _ = AppPaths.UseRoot(dir)` (AsyncLocal). Never set `WIN4K_HOME` inside a test — it is process-wide, and flipping it is what made `CaBundleTests` fail intermittently. Harvester tests use `Fakes/FixtureHttp` (an `HttpMessageHandler`), never the network.
-- **Publish:** `dotnet publish src/Win4K.ScreenSaver/Win4K.ScreenSaver.csproj -c Release -o publish` (single-file, ~115 MB)
+- **Publish:** `dotnet publish src/Win4K.ScreenSaver/Win4K.ScreenSaver.csproj -c Release -o publish` (single-file, ~124 MB; `WebView2Loader.dll` is bundled and self-extracted like libmpv)
 - **Install:** `scripts/install-scr.ps1` (self-elevates; `-SetAsDefault`, `-Uninstall`)
+- **Clip browser (`/c`):** WebView2 page from `https://app.win4k/` (embedded `Browser/ui/**`), previews from `https://previews.win4k/` (folder mapping). The page and host talk only through `docs/browser-bridge-contract.md`; the page sends `ready` first. Smoke-test it against a temp `WIN4K_HOME` copy of the profile — opening it migrates the real `settings.json` to v2.
 - **Debugging playback:** `$env:WIN4K_MPV_LOG="1"` raises `mpv.log` from warnings to full debug
 - Both projects need `<AllowUnsafeBlocks>` — `[LibraryImport]` source-generated marshalling requires it
 - **Settings live in JSON**, not the registry: `%LOCALAPPDATA%\Win4KScreensavers\settings.json`. Cache and manifest live alongside it.

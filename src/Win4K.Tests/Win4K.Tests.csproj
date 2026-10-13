@@ -30,4 +30,13 @@
     <ProjectReference Include="..\Win4K.ScreenSaver\Win4K.ScreenSaver.csproj" />
   </ItemGroup>
 
+  <!-- Microsoft.Web.WebView2's targets reference its WPF control too, which drags in WPF's
+       WindowsBase 5.0 and trips MSB3277 against the WinForms-only WindowsBase 4.0. Only the
+       WinForms control is used; drop the WPF reference before references are resolved. -->
+  <Target Name="DropWebView2Wpf" BeforeTargets="ResolveAssemblyReferences">
+    <ItemGroup>
+      <Reference Remove="@(Reference)" Condition="'%(Filename)' == 'Microsoft.Web.WebView2.Wpf'" />
+    </ItemGroup>
+  </Target>
+
 </Project>

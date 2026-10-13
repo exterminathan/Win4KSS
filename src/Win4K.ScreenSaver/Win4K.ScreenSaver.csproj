@@ -29,6 +29,8 @@
     <SelfContained>false</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <!-- WebView2 ships IntelliSense XML beside its assemblies; keep it out of publish/. -->
+    <AllowedReferenceRelatedFileExtensions>.pdb</AllowedReferenceRelatedFileExtensions>
   </PropertyGroup>
 
   <ItemGroup>
@@ -40,6 +42,22 @@
   <ItemGroup>
     <InternalsVisibleTo Include="Win4K.Tests" />
   </ItemGroup>
+  <!-- The clip browser (/c) is a WebView2 page. WebView2Loader.dll is a native runtime asset
+       of this package, so single-file publish bundles and self-extracts it with libmpv
+       (IncludeNativeLibrariesForSelfExtract above). -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4258.31" />
+  </ItemGroup>
+
+  <!-- The page itself (Browser/ui/**: index.html, app.js, app.css ...) is embedded and served
+       from https://app.win4k/ by BrowserForm. A wildcard, so files dropped in need no csproj
+       change; logical names are "ui/<relative path>" (UiAssets normalises the slashes). Until
+       index.html exists, UiAssets serves a built-in fallback page. -->
+  <ItemGroup>
+    <None Remove="Browser\ui\**" />
+    <Content Remove="Browser\ui\**" />
+    <EmbeddedResource Include="Browser\ui\**\*" LogicalName="ui/%(RecursiveDir)%(Filename)%(Extension)" WithCulture="false" />
+  </ItemGroup>
 
   <!-- A screen saver is just an exe with a different extension. Windows only offers files
        named *.scr in the Screen Saver Settings dropdown. -->
@@ -49,6 +67,15 @@
 
   <Target Name="CopyPublishedExeToScr" AfterTargets="Publish">
     <Copy SourceFiles="$(PublishDir)$(AssemblyName).exe" DestinationFiles="$(PublishDir)$(AssemblyName).scr" ContinueOnError="true" />
+  </Target>
+
+  <!-- Microsoft.Web.WebView2's targets reference its WPF control too, which drags in WPF's
+       WindowsBase 5.0 and trips MSB3277 against the WinForms-only WindowsBase 4.0. Only the
+       WinForms control is used; drop the WPF reference before references are resolved. -->
+  <Target Name="DropWebView2Wpf" BeforeTargets="ResolveAssemblyReferences">
+    <ItemGroup>
+      <Reference Remove="@(Reference)" Condition="'%(Filename)' == 'Microsoft.Web.WebView2.Wpf'" />
+    </ItemGroup>
   </Target>
 
 </Project>

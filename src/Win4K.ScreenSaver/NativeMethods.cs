@@ -46,6 +46,30 @@ internal static partial class NativeMethods
 
     private const uint GA_PARENT = 1;
 
+    [LibraryImport("user32.dll", EntryPoint = "RegisterWindowMessageW", StringMarshalling = StringMarshalling.Utf16)]
+    internal static partial uint RegisterWindowMessage(string name);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool SetForegroundWindow(IntPtr hWnd);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool AllowSetForegroundWindow(uint processId);
+
+    private const uint ASFW_ANY = unchecked((uint)-1);
+
+    /// <summary>
+    /// Asks every top-level window to handle <paramref name="message"/> (a registered message,
+    /// so only ours react), letting the receiver take the foreground — this process has it,
+    /// because the user just launched it, and may hand it on.
+    /// </summary>
+    internal static bool BroadcastActivation(uint message)
+    {
+        AllowSetForegroundWindow(ASFW_ANY);
+        return message != 0 && PostMessage(HWND_BROADCAST, message, IntPtr.Zero, IntPtr.Zero);
+    }
+
     [StructLayout(LayoutKind.Sequential)]
     private struct RECT
     {

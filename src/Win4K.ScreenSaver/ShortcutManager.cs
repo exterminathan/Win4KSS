@@ -182,6 +182,79 @@ public static class ShortcutManager
         }
     }
 
+    /// <summary>
+    /// What the browser's settings panel shows: which shortcuts exist and the hotkey on them
+    /// (the Desktop one first, as that is the one most people make).
+    /// </summary>
+    public static ShortcutOptions ReadOptions() => new(
+        DesktopShortcutExists,
+        StartMenuShortcutExists,
+        ReadHotkey(DesktopPath) ?? ReadHotkey(StartMenuPath) ?? DefaultHotkey);
+
+    /// <summary>
+    /// Creates or removes the Desktop and Start Menu shortcuts to match <paramref name="options"/>,
+    /// all carrying the same hotkey. Shortcuts target the companion .exe, never the .scr.
+    /// </summary>
+    /// <returns>False if any shortcut could not be written or removed (details are logged).</returns>
+    public static bool Apply(ShortcutOptions options)
+    {
+        var hotkey = string.IsNullOrWhiteSpace(options.Hotkey) ? null : options.Hotkey;
+
+        // Shortcuts must target an .exe, never the installed .scr — see CompanionExePath.
+        if (options.Desktop || options.StartMenu)
+            EnsureCompanionExe();
+
+        var ok = options.Desktop ? Create(DesktopPath, hotkey) : Remove(DesktopPath);
+        ok &= options.StartMenu ? Create(StartMenuPath, hotkey) : Remove(StartMenuPath);
+        return ok;
+    }
+
+    /// <summary>
+    /// Normalises a hotkey typed or captured by the browser page into the "CTRL+ALT+S" form a
+    /// .lnk expects. Accepts WinForms key names ("S", "F12", "D1") and the DOM's
+    /// KeyboardEvent.code names ("KeyS", "Digit1"), with CTRL/ALT/SHIFT in any order and case.
+    /// Null or empty means "no hotkey" and returns "". Returns null when it is not a usable
+    /// hotkey (no modifier, or an unknown key).
+    /// </summary>
+    public static string? NormalizeHotkey(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return "";
+
+        var modifiers = Keys.None;
+        Keys? key = null;
+        foreach (var raw in text.Split('+', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            switch (raw.ToUpperInvariant())
+            {
+                case "CTRL" or "CONTROL":
+                    modifiers |= Keys.Control;
+                    continue;
+                case "ALT":
+                    modifiers |= Keys.Alt;
+                    continue;
+                case "SHIFT":
+                    modifiers |= Keys.Shift;
+                    continue;
+            }
+
+            var name = raw;
+            if (name.Length == 4 && name.StartsWith("Key", StringComparison.OrdinalIgnoreCase))
+                name = name[3..];
+            else if (name.Length == 6 && name.StartsWith("Digit", StringComparison.OrdinalIgnoreCase))
+                name = "D" + name[5..];
+            else if (name.Length == 1 && char.IsDigit(name[0]))
+                name = "D" + name;
+
+            // Enum.TryParse would also take "65" as Keys.A; only names count.
+            if (!char.IsLetter(name[0]) || !Enum.TryParse<Keys>(name, ignoreCase: true, out var parsed) || key is not null)
+                return null;
+            key = parsed;
+        }
+
+        return key is { } k ? ToShortcutHotkey(k | modifiers) : null;
+    }
+
     private static void Set(Type type, object instance, string property, string value) =>
         type.InvokeMember(property, BindingFlags.SetProperty, null, instance, [value]);
 
@@ -208,3 +281,9 @@ public static class ShortcutManager
         return string.Join('+', parts);
     }
 }
+
+/// <summary>The walk-away shortcuts as the settings panel edits them.</summary>
+/// <param name="Desktop">A shortcut on the Desktop.</param>
+/// <param name="StartMenu">A shortcut in the Start Menu's Programs folder.</param>
+/// <param name="Hotkey">"CTRL+ALT+S" form, or null/empty for none. Explorer binds it only on those two shortcuts.</param>
+public sealed record ShortcutOptions(bool Desktop, bool StartMenu, string? Hotkey);

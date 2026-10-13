@@ -1,6 +1,8 @@
 using System.Diagnostics;
+using Microsoft.Web.WebView2.Core;
 using Win4K.Core;
 using Win4K.Core.Playback;
+using Win4K.ScreenSaver.Browser;
 
 namespace Win4K.ScreenSaver;
 
@@ -9,9 +11,9 @@ internal static class Program
     /// <summary>
     /// The Windows screen saver contract, plus two of our own:
     ///
-    ///   Win4KSS.scr            show settings
-    ///   Win4KSS.scr /c         show settings, modal to the foreground window
-    ///   Win4KSS.scr /c:HWND    same, with the owner window packed into the argument
+    ///   Win4KSS.scr            open the clip browser (settings live in it)
+    ///   Win4KSS.scr /c         open the clip browser; a second /c activates the open one
+    ///   Win4KSS.scr /c:HWND    same; the owner window Windows packs in is parsed but not used
     ///   Win4KSS.scr /p HWND    render the preview thumbnail as a child of HWND
     ///   Win4KSS.scr /s         run full screen
     ///   Win4KSS.scr /w         run in a normal resizable window   (ours)
@@ -40,8 +42,7 @@ internal static class Program
             switch (verb)
             {
                 case Verb.Configure:
-                    Application.Run(new SettingsForm());
-                    return 0;
+                    return RunBrowser(argument);
 
                 case Verb.Preview:
                     return RunPreview(argument);
@@ -121,17 +122,66 @@ internal static class Program
 
     // ---- verbs ----------------------------------------------------------------------------
 
-    private static int StartNow()
-    {
-        // Leave a breadcrumb so the /s process that Windows is about to launch knows a human
-        // triggered this and gives itself a longer input grace period.
-        LaunchContext.MarkManualLaunch();
+    /// <summary>The single-instance mutex of the clip browser, per session.</summary>
+    internal const string BrowserMutexName = @"Local\Win4KSS.Browser";
 
-        if (NativeMethods.StartConfiguredScreenSaver())
+    internal const string WebView2RuntimeUrl = "https://go.microsoft.com/fwlink/p/?LinkId=2124703";
+
+    private static int RunBrowser(string? ownerArgument)
+    {
+        // Windows' Screen Saver Settings passes its own HWND ("/c:1234"). The browser is a full
+        // window of its own rather than a dialog modal to that one, so it is only logged.
+        if (ownerArgument is not null)
+            Log.Info($"Browser: opened from Screen Saver Settings (owner {ownerArgument})");
+
+        // One browser at a time: two would fight over previews/index.json and both edit
+        // settings.json. A second /c brings the first to the front instead.
+        using var mutex = new Mutex(initiallyOwned: true, BrowserMutexName, out var createdNew);
+        if (!createdNew)
         {
-            Log.Info("StartNow: asked Windows to start the configured screen saver");
+            Log.Info("Browser: already open; activating it");
+            NativeMethods.BroadcastActivation(BrowserForm.ActivateMessage);
             return 0;
         }
+
+        if (!IsWebView2RuntimeInstalled(out var reason))
+        {
+            Log.Error($"Browser: WebView2 runtime missing ({reason})");
+            var open = MessageBox.Show(
+                "The clip browser needs the Microsoft Edge WebView2 Runtime, which is not installed.\n\n" +
+                $"Download it from:\n{WebView2RuntimeUrl}\n\nOpen the download page now?",
+                "Win4KSS", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+            if (open == DialogResult.Yes)
+                Process.Start(new ProcessStartInfo(WebView2RuntimeUrl) { UseShellExecute = true });
+            return 1;
+        }
+
+        Application.Run(new BrowserForm());
+        GC.KeepAlive(mutex);
+        return 0;
+    }
+
+    private static bool IsWebView2RuntimeInstalled(out string? reason)
+    {
+        try
+        {
+            var version = CoreWebView2Environment.GetAvailableBrowserVersionString();
+            reason = version is null ? "no version reported" : null;
+            return version is not null;
+        }
+        catch (Exception ex)
+        {
+            reason = ex.Message;
+            return false;
+        }
+    }
+
+    private static int StartNow()
+    {
+        // SaverLauncher leaves a breadcrumb so the /s process that Windows is about to launch
+        // knows a human triggered this and gives itself a longer input grace period.
+        if (SaverLauncher.StartNow())
+            return 0;
 
         // A full-screen exclusive app can swallow the broadcast. Falling back to running
         // ourselves loses "on resume, display logon screen", so say so in the log rather

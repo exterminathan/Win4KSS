@@ -49,8 +49,23 @@ that must match these real shapes exactly, so wiring it to the real `BrowserBrid
 `CoreWebView2.PostWebMessageAsJson` (host→page) and `WebMessageReceived` (page→host).
 Every message is `{ "type": "<name>", ...payload }`. The page never talks to anything
 but this channel — no fetch to a real backend except `https://previews.win4k/...` for
-preview images and `https://app.win4k/...` for the page's own static assets (both via
-`SetVirtualHostNameToFolderMapping`, so paths are plain `/path/to/file.jpg`).
+preview images and `https://app.win4k/...` for the page's own static assets (previews via
+`SetVirtualHostNameToFolderMapping`, the page's files via `WebResourceRequested` from
+embedded resources; either way paths are plain `/path/to/file.jpg`).
+
+## Handshake (load order)
+
+1. The page installs its `window.chrome.webview.addEventListener('message', …)` listener,
+   then posts **`{ "type": "ready" }`**. The host posts nothing before that.
+2. The host answers with `settings`, then — as soon as the catalogue has loaded, which may
+   already be the case — `catalog`, a **full** `stateDelta` (every clip), and `cacheStats`.
+   If `ready` arrives before the catalogue has loaded, the page gets `settings` +
+   `cacheStats` at once, and `catalog` + full `stateDelta` + `cacheStats` + `settings` (now
+   with per-source clip counts) when it lands. Show a spinner until `catalog`.
+3. After that, deltas are incremental. Send `ready` again only after a reload; the host then
+   resends everything from scratch (reset page state on every `catalog`).
+4. Then post `panelRect` (and `selectClip` if something is selected) so the native preview
+   lands in the right place.
 
 ## Host → page messages
 
@@ -79,6 +94,8 @@ preview images and `https://app.win4k/...` for the page's own static assets (bot
       "thumbnailUrl": "https://sylvan.apple.com/itunes-assets/.../GMT110_900x580.png",
       "isLocal": false,
       "addedUtc": "2026-08-12T00:00:00Z",
+      "description": null,
+      "sources": ["aerial-manifests", "apple"],
       "tags": [{ "facet": "Source", "value": "Apple" }, { "facet": "Category", "value": "Landscapes" }, { "facet": "Resolution", "value": "4K" }, { "facet": "DynamicRange", "value": "HDR available" }]
     }
   ]
@@ -88,6 +105,10 @@ preview images and `https://app.win4k/...` for the page's own static assets (bot
 Subject, TimeOfDay, Resolution, Aspect, DynamicRange, Duration, Codec, Licence, State`.
 `State` tags (`TagBuilder.Values`) are **not** included here — they come live via
 `stateDelta`, because they change without a catalogue refresh.
+Host additions: `description` (NASA prose, else null) and `sources` — the clip's rotation
+source ids (`Rotation.SourcesOf`: `apple`, `aerial-manifests`, `archive-org`, `nasa`,
+`local`), the same ids `setAutoAdd` and `settings.sources` use. `timeOfDay` is one of
+`Unknown|Day|Night|Sunrise|Sunset`. `addedUtc` is ISO-8601 UTC or null.
 
 ### `stateDelta` (sent on any change: rotation, pin, cache, download progress, health)
 ```json
@@ -106,7 +127,7 @@ Subject, TimeOfDay, Resolution, Aspect, DynamicRange, Duration, Codec, Licence, 
       "inRotation": true,
       "pinned": true,
       "cached": false,
-      "download": { "state": "Downloading", "fraction": 0.42, "bytesReceived": 35000000, "totalBytes": 83072197 },
+      "download": { "state": "Downloading", "fraction": 0.42, "bytesReceived": 35000000, "totalBytes": 83072197, "error": null },
       "health": "Ok",
       "isNew": true
     }
@@ -117,6 +138,14 @@ Subject, TimeOfDay, Resolution, Aspect, DynamicRange, Duration, Codec, Licence, 
 - `health` is derived by the host from `ClipHealth.IsUnhealthy(settings, key)` and sent as the string `"Ok"` or `"Unhealthy"` (there's no C# health enum — this mapping happens in `BrowserBridge.cs`). Use `Unhealthy` to render the tag.
 - `isNew` comes from `TagBuilder.IsNew(clip, nowUtc)` (`AddedUtc` within 30 days) — **never** derive "new" on the page from anything else; there's no `KnownKeys`-based signal in this message.
 - This message can be partial (only changed clips) or full; the page must merge by key, never replace the whole map.
+  The host only sends a clip when its state differs from what it last sent. User actions
+  (setRotation/setPinned/…) are answered at once; download progress and cache changes are
+  batched to ~4 Hz.
+- `cached` is true when the clip's playable rendition (at the current quality) is in the
+  video cache. Local clips are always `cached: false`; use `isLocal` from `catalog`.
+- `download` is null when no job exists (including once a job retires after `Done` or
+  `Cancelled`); `error` is the failure text for `Failed`.
+- `inRotation` = `RotationKeys`; `pinned` = `KeptOffline`.
 
 ### `previewReady`
 ```json
@@ -135,33 +164,65 @@ Subject, TimeOfDay, Resolution, Aspect, DynamicRange, Duration, Codec, Licence, 
     "quality": "Auto", "multiMonitorMode": "MainOnly", "shuffle": true, "useTimeOfDay": true,
     "cacheEnabled": true, "cacheDirectory": "C:\\Users\\...\\cache", "cacheBudgetGb": 20.0,
     "localFolders": [], "ffmpegPath": null,
-    "autoAddSources": ["apple"], "availableSources": ["apple", "archive-org", "nasa", "aerial-manifests:apple-tvos26", "aerial-manifests:amazon-fireos8"],
-    "previewCapabilities": { "ffmpegAvailable": true, "hoverClips": true }
-  }
+    "autoAddSources": ["apple", "local"], "availableSources": ["apple", "aerial-manifests", "archive-org", "nasa", "local"],
+    "previewCapabilities": { "ffmpegAvailable": true, "hoverClips": true, "ffmpegPath": "C:\\ffmpeg\\ffmpeg.exe" },
+    "shortcutDesktop": true, "shortcutStartMenu": false, "hotkey": "CTRL+ALT+S"
+  },
+  "sources": [
+    { "id": "apple", "name": "Apple TV aerials", "clipCount": 114, "autoAdd": true },
+    { "id": "aerial-manifests", "name": "Aerial manifests (tvOS 26, Fire TV, community)", "clipCount": 289, "autoAdd": false },
+    { "id": "archive-org", "name": "Internet Archive", "clipCount": 1060, "autoAdd": false },
+    { "id": "nasa", "name": "NASA", "clipCount": 9, "autoAdd": false },
+    { "id": "local", "name": "Local folders", "clipCount": 0, "autoAdd": true }
+  ],
+  "about": { "version": "1.0.0.0", "mpvVersion": "2.5", "dataFolder": "…", "settingsFile": "…",
+             "logFile": "…", "mpvLog": "…", "cacheFolder": "…", "previewsFolder": "…" }
 }
 ```
 - **No `enabledCatalogIds`** — that field is retired in v2 (`SourceMode`/`EnabledCatalogIds`/`SelectedClipIds` are all null now). Every source is always resolved; what plays is purely per-clip rotation (`stateDelta.inRotation`) plus per-source `autoAddSources`.
 - `availableSources` is the full list of source ids to render the per-source auto-add toggle row against (derived from `Rotation.SourceIds`, not a settings field itself — the host computes it from the loaded catalogue).
 - `autoAddSources` is `AppSettings.AutoAddSources`, landed in Phase F — the host sends it as-is.
+- **Host correction:** `availableSources` is exactly `Rotation.SourceIds` — the five plain
+  ids `apple`, `aerial-manifests`, `archive-org`, `nasa`, `local` (vendor feeds such as
+  `apple-tvos26` all belong to `aerial-manifests`; they are not separately toggleable).
+  `sources` (outside `values`, read-only) gives the same ids with a display name, clip count
+  and auto-add state — the easiest thing to render the toggle row from. `about` feeds the
+  About tab.
+- Enum values: `quality` = `Auto|Uhd4KSdr|Uhd4KHdr|Hd1080Sdr|Hd1080Hdr|Hd1080H264`,
+  `multiMonitorMode` = `MainOnly|SameOnEach|DifferentVideos|SpanAll`.
+- Shortcut fields (host addition) reflect the real `.lnk` files (`ShortcutManager`).
+  `hotkey` is in the `.lnk` form `CTRL+ALT+S`; on save the host also accepts DOM
+  `KeyboardEvent.code` names (`Ctrl+Alt+KeyS`, `Digit1`), requires at least one of
+  Ctrl/Alt/Shift (else a `notice`), and `""`/null clears it.
+- The host re-sends `settings` after every `saveSettings`: render what comes back.
 
 ### `cacheStats`
 ```json
-{ "type": "cacheStats", "pinnedBytes": 12000000000, "rollingBytes": 7800000000, "budgetBytes": 21474836480, "freeDiskBytes": 90000000000 }
+{ "type": "cacheStats", "pinnedBytes": 12000000000, "rollingBytes": 7800000000, "budgetBytes": 21474836480, "freeDiskBytes": 90000000000,
+  "pinnedFiles": 31, "rollingFiles": 22, "pendingPins": 3, "ownsPins": true }
 ```
+`ownsPins` false means another process (the saver) is downloading pins; show them as queued.
 
 ## Page → host messages
 
 | Message | Payload | Maps to |
 |---|---|---|
-| `setRotation` | `{ keys: string[], value: bool }` | `Rotation.SetInRotation(settings, keys, value)` |
-| `setAutoAdd` | `{ sourceId: string, value: bool, includeExisting?: bool }` | `Rotation.SetAutoAdd(settings, sourceId, value)`; `value: true` with `includeExisting: true` also calls `Rotation.SetInRotation(settings, Rotation.KeysOf(catalogue, sourceId), true)`. The UI's per-source toggle should prompt "also add the existing N clips?" (N = count of that source's clips not yet in rotation) and send `includeExisting` from the answer — don't silently default it either way. |
+| `ready` | `{}` | handshake, see above. Send once the message listener is installed |
+| `setRotation` | `{ keys: string[], value: bool }` | `Rotation.SetInRotation(settings, keys, value)` + debounced save; answered with a `stateDelta` |
+| `setAutoAdd` | `{ sourceId: string, value: bool, includeExisting?: bool }` | `Rotation.SetAutoAdd(settings, sourceId, value)`; `value: true` with `includeExisting: true` also calls `Rotation.SetInRotation(settings, Rotation.KeysOf(catalogue, sourceId), true)`. The UI's per-source toggle should prompt "also add the existing N clips?" (N = count of that source's clips not yet in rotation) and send `includeExisting` from the answer — don't silently default it either way. Host: `includeExisting` applies `value` to the existing clips both ways (`value: false` + `includeExisting: true` takes the source's clips out of the rotation). `sourceId` must be one of `availableSources`; answered with `settings` + `stateDelta`. |
 | `setPinned` | `{ keys: string[], value: bool }` | `PinManager.Pin`/`Unpin`; on `Pin`, host first runs `CanPin` and may reply with a one-off `pinRefused` message (see below) instead of a `stateDelta` |
 | `selectClip` | `{ key: string \| null }` | drives the native mpv preview panel the host positions over the detail pane's video rect (see `panelRect` below) |
-| `panelRect` | `{ x, y, width, height, visible: bool }` | page tells host where to position the native preview `HWND`, in page-relative CSS pixels; sent on resize/scroll/select |
-| `requestPreviews` | `{ keys: string[], kinds: "Still"\|"Hover"\|"Both" }` | `MediaPreviewService.Request(keys, PreviewKind)` — `kinds` string maps 1:1 to the flag enum member name |
-| `saveSettings` | `{ patch: { ...partial of settings.values } }` | debounced write to `AppSettings` |
-| `refreshCatalogs` | `{}` | `CatalogRefresher` run; host streams progress via a `refreshProgress` message (not detailed yet — show an indeterminate spinner until the next `catalog` arrives) |
-| `startNow` | `{}` | same as today's "Start now" |
+| `panelRect` | `{ x, y, width, height, visible: bool }` | page tells host where to position the native preview `HWND`, in **viewport** CSS pixels: `getBoundingClientRect()` of the video box, so scroll is already applied; sent on resize/scroll/select/layout change. The host converts with the WebView zoom and monitor DPI. The native panel draws **above** all page content, so send `visible: false` whenever anything (a menu, a modal, the settings panel) covers the video box or it scrolls out of view; the host hides the panel and pauses mpv |
+| `requestPreviews` | `{ keys: string[], kinds: "Still"\|"Hover"\|"Both" }` | `MediaPreviewService.Request(keys, PreviewKind)` — `kinds` string maps 1:1 to the flag enum member name. Every preview already decided (Ready, Placeholder, Failed, Unavailable, Missing) is answered at once with `previewReady`; Pending ones arrive when done. Background fill also emits `previewReady` for clips never requested: keep them |
+| `cancelPreviews` | `{ keys: string[] }` | `MediaPreviewService.Cancel(keys)`, for cards scrolled away |
+| `saveSettings` | `{ patch: { ...partial of settings.values } }` | applied to `AppSettings` at once, written 500 ms after the last edit; answered with `settings`. Unknown/read-only fields are ignored. `cacheBudgetGb` is clamped to ≥ 1 (lowering it evicts now). `cacheDirectory` and `ffmpegPath` take effect next launch (a `notice` says so). `localFolders` (the full list) reloads the catalogue. `autoAddSources` (the full list) sets every source's auto-add. Shortcut fields write the `.lnk` files at once |
+| `refreshCatalogs` | `{}` | `CatalogRefresher.RefreshAsync` over every auto source; streams `refreshProgress` (below), then a new `catalog` + full `stateDelta` (settings re-prepared, so new clips from auto-add sources join the rotation). Ignored while one is running |
+| `startNow` | `{}` | asks Windows to start the configured saver (the `/now` path; honours the resume lock). A refusal comes back as a `notice` |
+| `purgeCache` | `{}` | `VideoCache.PurgeUnpinned()` (confirm in the page first); a `notice` reports the count |
+| `retryDownloads` | `{}` | `DownloadQueue.RetryFailed()` |
+| `pickFolder` | `{ purpose: "localFolder"\|"cacheDirectory" }` | native folder dialog; the choice is added to `localFolders` (catalogue reloads) or becomes `cacheDirectory`; answered with `settings` |
+| `openFolder` | `{ which: "cache"\|"logs"\|"previews" }` | opens it in Explorer |
+| `log` | `{ level: "info"\|"warn"\|"error", text: string }` | written to win4k.log as `Page: …`; use it for page errors (`window.onerror`) |
 
 ### `pinRefused` (host → page, reply to a refused `setPinned`)
 ```json
@@ -169,6 +230,25 @@ Subject, TimeOfDay, Resolution, Aspect, DynamicRange, Duration, Codec, Licence, 
 ```
 Shape mirrors `PinCheck` (`RequiredGb`, budget, `ShortfallBytes`). Page should offer
 "Raise limit to {requiredGb} GB?" → on yes, `saveSettings({ patch: { cacheBudgetGb: requiredGb } })` then retry `setPinned`.
+Also carries `requiredBytes`, `budgetBytes`, `shortfallBytes`; `shortfallGb` is rounded up
+to 0.1. Nothing is pinned on refusal and no `stateDelta` follows. A successful pin is
+answered with a `stateDelta` (`pinned: true`, `download.state: "Queued"`) and `cacheStats`.
+
+### `refreshProgress` (host → page, during `refreshCatalogs`)
+```json
+{ "type": "refreshProgress", "running": true, "sourceId": "archive-org", "stage": "Pixabay: items", "done": 120, "total": 1060, "ok": null, "sources": null, "error": null }
+{ "type": "refreshProgress", "running": false, "sourceId": null, "stage": null, "done": null, "total": null, "ok": true,
+  "sources": [{ "sourceId": "nasa", "succeeded": true, "assetCount": 9, "added": 1, "removed": 0, "error": null }], "error": null }
+```
+Running messages come at most ~4 Hz, the latest per source. The final one (`running: false`)
+is followed by a fresh `catalog`, unless `error` is set (the whole refresh failed and the old
+catalogue stays).
+
+### `notice` (host → page)
+```json
+{ "type": "notice", "level": "info", "text": "The new cache folder is used the next time …" }
+```
+`level` is `info|warning|error`. Show it as a toast.
 
 ## Build/test approach on a machine without Windows
 
@@ -191,3 +271,20 @@ Shape mirrors `PinCheck` (`RequiredGb`, budget, `ShortfallBytes`). Page should o
    independently. The UI lane's job ends at the JSON messages above and the mock harness.
 5. Leave `TODO(local)` comments anywhere you had to guess at a detail you couldn't
    verify from the source — grep for them before merging.
+
+## Host implementation (Phase E C# half, landed on `main`)
+
+- `src/Win4K.ScreenSaver/Browser/BrowserBridge.cs` implements everything above. Inbound is
+  `OnPageMessage(string json)` (a JSON string literal holding JSON is unwrapped); outbound is
+  an `Action<string>` post callback; no WinForms/WebView2 types. Tested in
+  `Win4K.Tests/BrowserBridgeTests.cs`.
+- `BrowserForm.cs` hosts it. The page is served from `https://app.win4k/` through
+  `WebResourceRequested`, from resources embedded by the `Browser/ui/**` wildcard, so no
+  csproj edit is needed when the UI lands. The start URL is `https://app.win4k/index.html`.
+  Until `Browser/ui/index.html` exists, a built-in fallback page ("UI not built") is served.
+  Navigating to any other origin, and `target=_blank` links, open in the user's browser.
+- `https://previews.win4k/` is `SetVirtualHostNameToFolderMapping` onto the previews folder.
+  The mapping ignores the `?v=` query (verified: URLs with `?v=` load).
+- Page assets must be relative or `https://app.win4k/…`: no CDN, no network.
+- `/c` opens this window. It is single-instance: a second `/c` activates the open one.
+- Key order inside a received message is not meaningful (Chromium re-sorts posted JSON).

@@ -68,6 +68,12 @@ public static class AppPaths
     /// </summary>
     public static string PreviewsDirectory => Path.Combine(Root, "previews");
 
+    /// <summary>
+    /// The clip browser's WebView2 user data folder (cookies, cache, GPU shader cache). Kept
+    /// under our root rather than next to the exe, which may be read-only (System32).
+    /// </summary>
+    public static string WebView2Directory => Path.Combine(Root, "webview2");
+
     /// <summary>Where libmpv-2.dll is extracted to when running from a single-file .scr.</summary>
     public static string RuntimeDirectory => Path.Combine(Root, "runtime");
 
