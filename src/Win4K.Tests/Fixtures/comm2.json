@@ -1,0 +1,17 @@
+{
+ "assets": [
+  {
+   "id": "robinfrcd_capmechant_202304",
+   "pointsOfInterest": {
+    "0": "Flying over rough sea at Cap Méchant, Réunion, France"
+   },
+   "title": "Cap Méchant",
+   "accessibilityLabel": "France",
+   "scene": "sea",
+   "timeOfDay": "day",
+   "url-1080-H264": "https://github.com/RobinFrcd/AerialShots/releases/download/reunion-2022/robinfrcd_reunion_CapMechant_1080p_h264.m4v",
+   "url-1080-SDR": "https://github.com/RobinFrcd/AerialShots/releases/download/reunion-2022/robinfrcd_reunion_CapMechant_1080p_hevc.m4v",
+   "url-4K-SDR": "https://github.com/RobinFrcd/AerialShots/releases/download/reunion-2022/robinfrcd_reunion_CapMechant_4k_hevc.m4v"
+  }
+ ]
+}

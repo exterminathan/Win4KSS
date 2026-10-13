@@ -1,0 +1,274 @@
+{
+  "$comment": "Registry of 4K clip sources. Every entry was probed live on 2026-08-12; 'verified' records what was actually measured, not what the site claims. Win4K.Core.Catalogs.CatalogRefresher (C#; scripts/harvest.py retired 2026-10-13) refreshes the entries marked harvest:auto into catalog-<id>.json: Apple manifest schema, so Win4K.Core.Apple.AppleManifest parses them unchanged, plus schema-v2 extension fields. The copies here are the embedded fallback; in-app refreshes write to %LOCALAPPDATA%/Win4KScreensavers/catalogs.",
+  "schemaVersion": 1,
+  "probedUtc": "2026-08-12",
+  "sources": [
+    {
+      "id": "archive-org",
+      "displayName": "Internet Archive — free stock footage",
+      "harvest": "auto",
+      "verified": {
+        "status": "live",
+        "assets": 1060,
+        "sizeBytes": 74436216103,
+        "codec": "h264",
+        "bitrateMbps": 13,
+        "resolutions": [
+          "4096x2160",
+          "4096x2304",
+          "3840x2160",
+          "4096x1728"
+        ],
+        "watermark": "none observed",
+        "rangeRequests": true,
+        "note": "Professional RED-shot stock footage, 22-70s per clip. Aspect is mostly DCI 1.90:1, so a 16:9 display crops slightly — panscan handles it. The 2.37:1 items are letterboxed and worth excluding.",
+        "harvestedUtc": "2026-08-12",
+        "reharvest": "2026-10-13: 1316 files (upstream grew; harvest.py and the C# port agreed exactly). 47 are byte-identical re-uploads in '_YYYYMM' mirror items (Water614KRes_201507, ThinSmoke974KRes_201507, one _201511) and are dropped by (file name, size), leaving 1269."
+      },
+      "groups": [
+        {
+          "name": "scenic",
+          "scene": "nature",
+          "query": "identifier:(*4kRes*) AND mediatype:movies",
+          "note": "18 items are landscape/nature/aerial; 12 are element shots (smoke, fire, particles, clock) which make good abstract screensavers but are not scenery."
+        },
+        {
+          "name": "pixabay-mirror",
+          "scene": "mixed",
+          "query": "identifier:(pixabay-*) AND mediatype:movies",
+          "note": "183 items mirrored from Pixabay; 54 files are >=4K including one 7680x4320. Key-free path to Pixabay content."
+        }
+      ]
+    },
+    {
+      "id": "nasa",
+      "displayName": "NASA Image and Video Library",
+      "harvest": "auto",
+      "verified": {
+        "status": "live",
+        "auth": "none required",
+        "assets": 9,
+        "watermark": "none",
+        "reharvest": "2026-10-13: 19 >=4K of 125 search hits. harvest.py's 9 was an undercount: urllib rejects the collection URLs of ids containing spaces ('NISAR Mission Video') and it skipped them silently. The C# harvester escapes them and reads dimensions from each asset's metadata.json (ExifTool dump) instead of ffprobing.",
+        "note": "Low yield relative to its size — the library is overwhelmingly 1080p, and filenames carry no resolution marker, so each candidate has to be measured. 9 of 98 candidates measured >=4K in the first harvest. Worth it for one standout: 'Earth from Space in 4K, Expedition 65 Edition', 4096x2160, 3000s at 10.8 Mbps, which alone cuts into dozens of orbital clips.",
+        "harvestedUtc": "2026-08-12"
+      },
+      "queries": [
+        "earth from space",
+        "aurora",
+        "timelapse earth",
+        "clouds from orbit",
+        "ISS flyover",
+        "nebula"
+      ]
+    },
+    {
+      "id": "aerial-manifests",
+      "displayName": "Vendor + community aerial manifests",
+      "harvest": "auto",
+      "verified": {
+        "status": "live",
+        "assets": 289,
+        "watermark": "none",
+        "note": "Schema-identical to Apple's own manifest. Mirrored as files rather than fetched — there is no queryable upstream. Refresh by re-pulling from the AerialVideos repo.",
+        "harvestedUtc": "2026-08-12"
+      },
+      "feeds": [
+        {
+          "id": "apple-tvos26",
+          "assets": 139,
+          "url": "https://raw.githubusercontent.com/theothernt/AerialVideos/master/src/lib/tvos26.json",
+          "strings": "https://raw.githubusercontent.com/theothernt/AerialViews/master/app/src/main/res/raw/tvos26_strings.json",
+          "note": "25 more assets than resources-16.tar, plus 59 subcategories and a 687-entry caption file."
+        },
+        {
+          "id": "amazon-fireos8",
+          "assets": 112,
+          "url": "https://raw.githubusercontent.com/theothernt/AerialVideos/master/src/lib/fireos8.json",
+          "cdn": "aebcs-cdn-prod-na.services.firetv.amazon.dev",
+          "verifiedSample": "3840x2160 HEVC Main, 219 MB / 252 s / 6.95 Mbps",
+          "note": "Carries a real timeOfDay field on every asset, which Apple's modern manifest does not."
+        },
+        {
+          "id": "jetson-creative",
+          "assets": 20,
+          "url": "https://raw.githubusercontent.com/theothernt/AerialVideos/master/src/lib/comm1.json",
+          "cdn": "github.com/glouel/AerialCommunity/releases",
+          "verifiedSample": "3840x2160 HEVC Main 10, 39 MB / 96 s / 3.22 Mbps",
+          "note": "Cheapest bytes-per-second in the whole survey — 0.40 MB/s of playback."
+        },
+        {
+          "id": "robin-fourcade",
+          "assets": 18,
+          "url": "https://raw.githubusercontent.com/theothernt/AerialVideos/master/src/lib/comm2.json",
+          "cdn": "github.com/RobinFrcd/AerialShots/releases",
+          "verifiedSample": "3840x2160 HEVC Main 10, 200 MB / 105 s / 15.1 Mbps"
+        }
+      ]
+    },
+    {
+      "id": "youtube-clean",
+      "displayName": "YouTube — watermark-checked channels",
+      "harvest": "curated",
+      "verified": {
+        "status": "live",
+        "method": "Extracted a 2160p frame from mid-video with yt-dlp and inspected it. 3 of 8 channels tested were clean; the other 5 burn in persistent branding.",
+        "note": "Never add a channel here without running the frame check — branding is invisible in search results and thumbnails. Cut with stream copy (no --force-keyframes-at-cuts): 13 s vs 3 min for the same 20 s 4K cut."
+      },
+      "channels": [
+        {
+          "id": "aerial-earth",
+          "handle": "@AerialEarth",
+          "watermark": "none",
+          "verifiedVideos": [
+            "EColTNIbOko",
+            "CslwiU5Qazs"
+          ],
+          "quality": "2160p VP9",
+          "note": "Purpose-built screensaver channel: '(No Sound)' 4K uploads running 1-12 hours each. Best single YouTube source found. Mixes real aerial footage with abstract/AI-generated loops — both useful, but check which you are cutting.",
+          "picks": [
+            {
+              "id": "EColTNIbOko",
+              "seconds": 38781,
+              "title": "Forests from Above (No Sound) — 10 Hours"
+            },
+            {
+              "id": "CslwiU5Qazs",
+              "seconds": 4368,
+              "title": "Grand Canyon from Above (No Sound) — 1 Hour"
+            },
+            {
+              "id": "MLm07I49RiE",
+              "seconds": 7444,
+              "title": "Flying Through Clouds 4K UHD (No Sound)"
+            },
+            {
+              "id": "KEQFROIGcmo",
+              "seconds": 9195,
+              "title": "Stunning Ocean Water Slow Motion 4K"
+            },
+            {
+              "id": "U5JKi78fy3Q",
+              "seconds": 3970,
+              "title": "Colorado Mountain Vista 4K UHD (static)"
+            }
+          ]
+        },
+        {
+          "id": "parker-sheppard",
+          "watermark": "none",
+          "verifiedVideos": [
+            "nDspkEvEqj0"
+          ],
+          "quality": "2160p",
+          "note": "Cinematic FPV. Clean, but fast motion with visible motion blur — less restful than slow drone work, and compresses harder.",
+          "picks": [
+            {
+              "id": "nDspkEvEqj0",
+              "seconds": 3615,
+              "title": "One Hour Cinematic FPV Drone Film"
+            }
+          ]
+        },
+        {
+          "id": "trm-video",
+          "watermark": "none",
+          "verifiedVideos": [
+            "mKysd7txJSM"
+          ],
+          "quality": "2160p",
+          "note": "Clean aerial, though the subject matter is narrow (golf courses, UK countryside).",
+          "picks": [
+            {
+              "id": "mKysd7txJSM",
+              "seconds": 3601,
+              "title": "4K 1-Hour views of Golf Courses"
+            }
+          ]
+        }
+      ],
+      "rejected": [
+        {
+          "channel": "Nature Relaxation Films",
+          "reason": "large persistent logo, lower-left"
+        },
+        {
+          "channel": "KS Creative",
+          "reason": "burned-in name, URL and IG handle, lower-left"
+        },
+        {
+          "channel": "PRIMAL EARTH",
+          "reason": "text top-left; footage also soft/upscaled"
+        },
+        {
+          "channel": "Beautiful World 4k",
+          "reason": "burned-in channel name, lower-left"
+        },
+        {
+          "channel": "Relaxation Landscapes Film",
+          "reason": "social icons and text, top-left"
+        }
+      ]
+    },
+    {
+      "id": "stock-apis",
+      "displayName": "Pexels / Pixabay / Coverr",
+      "harvest": "needs-key",
+      "verified": {
+        "status": "requires free API key",
+        "note": "Unauthenticated calls return 401. Keys are free and instant. Pexels exposes per-rendition width/height, which makes it the only one that can be filtered to the display resolution reliably — directly relevant to the resolution-matching rework."
+      },
+      "services": [
+        {
+          "id": "pexels",
+          "endpoint": "https://api.pexels.com/videos/search",
+          "rateLimit": "25000/month",
+          "attribution": false
+        },
+        {
+          "id": "pixabay",
+          "endpoint": "https://pixabay.com/api/videos/",
+          "rateLimit": "100/minute",
+          "attribution": false
+        },
+        {
+          "id": "coverr",
+          "endpoint": "https://api.coverr.co/videos",
+          "rateLimit": "unpublished",
+          "attribution": false
+        }
+      ]
+    }
+  ],
+  "rejected": [
+    {
+      "id": "4kmedia-org",
+      "reason": "All 159 download links are dead. The site is up and its metadata is accurate (vendor demos at 3840x2160, some >100 Mbps), but every file is hosted on Google Drive and every one returns 404 'does not exist'. Verified against a control: a live-but-restricted Drive file returns 401, not 404.",
+      "checkedUtc": "2026-08-12"
+    },
+    {
+      "id": "demo-uhd3d.com",
+      "reason": "Domain parked and for sale."
+    },
+    {
+      "id": "4ksamples.com",
+      "reason": "Domain parked and for sale."
+    },
+    {
+      "id": "wikimedia-commons",
+      "reason": "8 of 120 sampled videos are >=3840 wide, and most of those are diagrams, charts or demos rather than scenery. One usable item (Iceland volcano eruption, 3840x2160)."
+    },
+    {
+      "id": "blender-open-movies",
+      "reason": "download.blender.org returns 403 to scripted requests, and the films are narrative animation — wrong texture for ambient wallpaper regardless."
+    },
+    {
+      "id": "vendor-ambient-cdns",
+      "reason": "Google TV / Chromecast archives are stills capped near 2560px, not video. Samsung and LG have no public manifest and no community mapping to build on."
+    },
+    {
+      "id": "live-hls-streams",
+      "reason": "libmpv plays .m3u8 natively so support is nearly free, but nature cams are overwhelmingly 1080p and a stream cannot be cached, which defeats the offline design."
+    }
+  ]
+}

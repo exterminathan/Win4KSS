@@ -1,0 +1,10 @@
+{
+  // VS Code otherwise opens the secondary side bar with its built-in chat view in every new
+  // window (the setting's default is "visibleInWorkspace"). The spinup pipeline opens Claude
+  // Code as an editor tab, so that second chat panel is pure noise.
+  //
+  // Window-scoped setting, so keeping it here confines the change to projects created by
+  // ClaudeGlobalSetup/scripts/new-project.ps1 rather than editing global VS Code settings.
+  // Delete this file (or flip to "visibleInWorkspace") if you want the built-in chat back.
+  "workbench.secondarySideBar.defaultVisibility": "hidden"
+}

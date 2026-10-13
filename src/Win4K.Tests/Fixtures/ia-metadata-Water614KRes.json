@@ -1,0 +1,32 @@
+{
+ "files": [
+  {
+   "name": "Water 61 - 4K res.mp4",
+   "source": "original",
+   "format": "MPEG4",
+   "length": "61.2",
+   "width": "4096",
+   "height": "2160",
+   "size": "82863222"
+  },
+  {
+   "name": "Water 62 - 4K res.mp4",
+   "source": "original",
+   "format": "MPEG4",
+   "length": "30.0",
+   "width": "4096",
+   "height": "2160",
+   "size": "60000000"
+  }
+ ],
+ "metadata": {
+  "identifier": "Water614KRes",
+  "title": "Water 61",
+  "creator": "Mitch Martinez",
+  "subject": [
+   "water",
+   "stock footage",
+   "4k"
+  ]
+ }
+}

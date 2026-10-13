@@ -1,0 +1,54 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Required by [LibraryImport] source-generated marshalling in NativeMethods.cs. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <!-- Windows looks up screen savers by file name; this is what lands in System32 as .scr.
+         Screen Saver Settings shows string-table resource 1 if the .scr has one, otherwise the
+         file name — .NET emits no string table, so the file name IS the display name. The
+         version-resource fields below just keep Task Manager / Properties consistent. -->
+    <AssemblyName>Win4KSS</AssemblyName>
+    <RootNamespace>Win4K.ScreenSaver</RootNamespace>
+    <AssemblyTitle>Win4KSS</AssemblyTitle>
+    <Product>Win4KSS</Product>
+    <Company>Win4KSS</Company>
+    <Description>Win4KSS — 4K video screen saver</Description>
+
+    <!-- PerMonitorV2 lives in app.manifest, not here: WinForms needs it at the Win32 level
+         before any window is created, and cdima/aerial's mixed-DPI mis-sizing came from lacking it. -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Win4K.Core\Win4K.Core.csproj" />
+  </ItemGroup>
+
+  <!-- Program stays internal — it is an entry point, not API — but the screen saver
+       argument forms are fiddly enough to be worth testing directly. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="Win4K.Tests" />
+  </ItemGroup>
+
+  <!-- A screen saver is just an exe with a different extension. Windows only offers files
+       named *.scr in the Screen Saver Settings dropdown. -->
+  <Target Name="CopyExeToScr" AfterTargets="Build">
+    <Copy SourceFiles="$(TargetPath)" DestinationFiles="$(TargetDir)$(AssemblyName).scr" ContinueOnError="true" />
+  </Target>
+
+  <Target Name="CopyPublishedExeToScr" AfterTargets="Publish">
+    <Copy SourceFiles="$(PublishDir)$(AssemblyName).exe" DestinationFiles="$(PublishDir)$(AssemblyName).scr" ContinueOnError="true" />
+  </Target>
+
+</Project>

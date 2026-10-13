@@ -1,0 +1,40 @@
+{
+ "assets": [
+  {
+   "timeOfDay": "day",
+   "accessibilityLabel": "Fisk Train",
+   "title": "",
+   "scene": "sea",
+   "id": "content-d1b2090f-f2ad-49fa-bbc7-4ec64957680b",
+   "url-4K-SDR": "https://aebcs-cdn-prod-na.services.firetv.amazon.dev/content/UHD/content-d1b2090f-f2ad-49fa-bbc7-4ec64957680b.mp4",
+   "url-1080-SDR": "https://aebcs-cdn-prod-na.services.firetv.amazon.dev/content/FHD/content-d1b2090f-f2ad-49fa-bbc7-4ec64957680b.mp4",
+   "pointsOfInterest": {
+    "0": "A huge school of Yellowtail Snapper fish gather in formation."
+   }
+  },
+  {
+   "timeOfDay": "sunset",
+   "accessibilityLabel": "Magdalena Bay Sunset",
+   "title": "",
+   "scene": "sea",
+   "id": "content-82f845c1-85ae-4eba-b57a-7860f1e8e998",
+   "url-4K-SDR": "https://aebcs-cdn-prod-na.services.firetv.amazon.dev/content/UHD/content-82f845c1-85ae-4eba-b57a-7860f1e8e998.mp4",
+   "url-1080-SDR": "https://aebcs-cdn-prod-na.services.firetv.amazon.dev/content/FHD/content-82f845c1-85ae-4eba-b57a-7860f1e8e998.mp4",
+   "pointsOfInterest": {
+    "0": "The sun sets over the clear blue waters of Magdalena Bay, Mexico."
+   }
+  },
+  {
+   "timeOfDay": "sunrise",
+   "accessibilityLabel": "Morning mist",
+   "title": "",
+   "scene": "nature",
+   "id": "content-8dd41619-4b4d-4077-aa02-5ad62a658f7d",
+   "url-4K-SDR": "https://aebcs-cdn-prod-na.services.firetv.amazon.dev/content/UHD/content-8dd41619-4b4d-4077-aa02-5ad62a658f7d.mp4",
+   "url-1080-SDR": "https://aebcs-cdn-prod-na.services.firetv.amazon.dev/content/FHD/content-8dd41619-4b4d-4077-aa02-5ad62a658f7d.mp4",
+   "pointsOfInterest": {
+    "0": "Morning mist breaks over the California coastline."
+   }
+  }
+ ]
+}

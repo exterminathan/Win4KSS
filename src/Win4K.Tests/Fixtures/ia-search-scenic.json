@@ -1,0 +1,23 @@
+{
+ "responseHeader": {
+  "status": 0
+ },
+ "response": {
+  "numFound": 4,
+  "start": 0,
+  "docs": [
+   {
+    "identifier": "Fire7345s4kRes"
+   },
+   {
+    "identifier": "youtube-abc123"
+   },
+   {
+    "identifier": "Water614KRes"
+   },
+   {
+    "identifier": "Water614KRes_201507"
+   }
+  ]
+ }
+}

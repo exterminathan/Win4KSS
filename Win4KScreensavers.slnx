@@ -1,0 +1,7 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Win4K.Core/Win4K.Core.csproj" />
+    <Project Path="src/Win4K.ScreenSaver/Win4K.ScreenSaver.csproj" />
+    <Project Path="src/Win4K.Tests/Win4K.Tests.csproj" />
+  </Folder>
+</Solution>

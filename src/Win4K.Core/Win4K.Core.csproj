@@ -1,0 +1,54 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- -windows because everything here is Windows-only P/Invoke; deliberately no UseWindowsForms,
+         Core must stay UI-free so it can be exercised from tests without a message loop. -->
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <!-- Required by [LibraryImport] source-generated marshalling, and by the mpv event
+         structs in Playback/MpvInterop.cs which are read through pointers. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <LibMpvPath>$(MSBuildThisFileDirectory)..\..\native\mpv\libmpv-2.dll</LibMpvPath>
+  </PropertyGroup>
+
+  <!-- Lets the tests drive internal seams (the preview scheduler's TryTakeNext, head sizing). -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="Win4K.Tests" />
+  </ItemGroup>
+
+  <!-- Last-resort manifest, so a fresh install with no network still has 114 clips to
+       show. ~113 KB; refresh it with scripts/update-fallback-manifest.ps1. -->
+  <ItemGroup>
+    <EmbeddedResource Include="$(MSBuildThisFileDirectory)..\..\assets\fallback-entries.json">
+      <LogicalName>Win4K.Core.fallback-entries.json</LogicalName>
+    </EmbeddedResource>
+    <!-- Apple Root CA public certificate. Windows does not ship it, but sylvan.apple.com
+         chains to it — see AppleTrust. Public root, no secrets. -->
+    <EmbeddedResource Include="$(MSBuildThisFileDirectory)..\..\assets\apple-root-ca.cer">
+      <LogicalName>Win4K.Core.apple-root-ca.cer</LogicalName>
+    </EmbeddedResource>
+    <!-- Harvested clip catalogues (see CLAUDE.md, "Video source registry"). Embedded so the
+         installed single-file .scr carries them with no folder to deploy alongside. -->
+    <EmbeddedResource Include="$(MSBuildThisFileDirectory)..\..\assets\registry\*.json">
+      <LogicalName>Win4K.Core.%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <!-- Flow libmpv-2.dll to the output of Core and of everything that references it.
+       It is gitignored and fetched by scripts/fetch-libmpv.ps1, so a fresh clone builds
+       fine and only fails at runtime — the warning below is what points you at the script. -->
+  <ItemGroup Condition="Exists('$(LibMpvPath)')">
+    <Content Include="$(LibMpvPath)">
+      <Link>libmpv-2.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <Target Name="WarnIfLibMpvMissing" BeforeTargets="Build" Condition="!Exists('$(LibMpvPath)')">
+    <Warning Text="libmpv-2.dll not found at $(LibMpvPath). Playback will fail at runtime. Run: pwsh ./scripts/fetch-libmpv.ps1" />
+  </Target>
+
+</Project>

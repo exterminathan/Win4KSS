@@ -1,0 +1,176 @@
+{
+ "files": [
+  {
+   "name": "Fire 66 - 45s - 4k res.mp4",
+   "source": "original",
+   "format": "MPEG4",
+   "length": "55.47",
+   "height": "2160",
+   "width": "4096",
+   "mtime": "1404584461",
+   "size": "83072197",
+   "md5": "b32d1fe214aa6724cc2d6c410649476d",
+   "crc32": "9dae4ade",
+   "sha1": "6b26376edfe27314b4f1bd6cb0208cf69f73a38c"
+  },
+  {
+   "name": "Fire 66 - 45s - 4k res.ogv",
+   "source": "derivative",
+   "format": "Ogg Video",
+   "original": "Fire 66 - 45s - 4k res.mp4",
+   "mtime": "1404587187",
+   "size": "3894785",
+   "md5": "db617c60b0fa4b7cd092f2912c402a79",
+   "crc32": "3623cae1",
+   "sha1": "8f70e56a84613a2e187b2959077f7bf6c4680791",
+   "length": "55.46",
+   "height": "300",
+   "width": "568"
+  },
+  {
+   "name": "Fire7345s4kRes.thumbs/Fire 66 - 45s - 4k res_000001.jpg",
+   "source": "derivative",
+   "format": "Thumbnail",
+   "original": "Fire 66 - 45s - 4k res.mp4",
+   "mtime": "1404586072",
+   "size": "5764",
+   "md5": "98165ac91c55094aef6340cacb1f88ea",
+   "crc32": "b2c45aca",
+   "sha1": "d58482bf93d8bdfb5124bf2a551cd418e953208a"
+  },
+  {
+   "name": "Fire7345s4kRes.thumbs/Fire 66 - 45s - 4k res_000007.jpg",
+   "source": "derivative",
+   "format": "Thumbnail",
+   "original": "Fire 66 - 45s - 4k res.mp4",
+   "mtime": "1404586081",
+   "size": "5539",
+   "md5": "a0461a31ddd020454905ba7154f668dd",
+   "crc32": "ca6c2794",
+   "sha1": "867b60aabdecfa5ecf2146d0642f0426f993e033"
+  },
+  {
+   "name": "Fire7345s4kRes.thumbs/Fire 66 - 45s - 4k res_000012.jpg",
+   "source": "derivative",
+   "format": "Thumbnail",
+   "original": "Fire 66 - 45s - 4k res.mp4",
+   "mtime": "1404586090",
+   "size": "5634",
+   "md5": "8bda67abd67f5bfae6642fd17dcf224f",
+   "crc32": "3b1f5412",
+   "sha1": "d93beb555649fa1425a9a7277dbc255ed8a825bb"
+  },
+  {
+   "name": "Fire7345s4kRes.thumbs/Fire 66 - 45s - 4k res_000017.jpg",
+   "source": "derivative",
+   "format": "Thumbnail",
+   "original": "Fire 66 - 45s - 4k res.mp4",
+   "mtime": "1404586099",
+   "size": "6589",
+   "md5": "7dc511cb91130ba83cc2735ec2c30285",
+   "crc32": "2c37ae5a",
+   "sha1": "7badfb189f71670864bd416374cda22b252cbbf2"
+  },
+  {
+   "name": "Fire7345s4kRes.thumbs/Fire 66 - 45s - 4k res_000022.jpg",
+   "source": "derivative",
+   "format": "Thumbnail",
+   "original": "Fire 66 - 45s - 4k res.mp4",
+   "mtime": "1404586108",
+   "size": "5722",
+   "md5": "42698cff9019608ec26dd8f8d3e1736f",
+   "crc32": "cb192c90",
+   "sha1": "aa94cc09c3db1c6ab3ca5dbcc1e15beabcb44549"
+  },
+  {
+   "name": "Fire7345s4kRes.thumbs/Fire 66 - 45s - 4k res_000027.jpg",
+   "source": "derivative",
+   "format": "Thumbnail",
+   "original": "Fire 66 - 45s - 4k res.mp4",
+   "mtime": "1404586117",
+   "size": "7182",
+   "md5": "423fd96b0c4076056b3e53f32e6f8f32",
+   "crc32": "281cb4d3",
+   "sha1": "f498d676e7a109dcf5e3b91a7f87e0aaeb9cc902"
+  },
+  {
+   "name": "Fire7345s4kRes.thumbs/Fire 66 - 45s - 4k res_000032.jpg",
+   "source": "derivative",
+   "format": "Thumbnail",
+   "original": "Fire 66 - 45s - 4k res.mp4",
+   "mtime": "1404586126",
+   "size": "7546",
+   "md5": "1b8ede57b45c0dbba13f220ea6b7cefc",
+   "crc32": "c2684ad3",
+   "sha1": "172006a1f3723ba80c41e0c5a8205e9cf106c477"
+  },
+  {
+   "name": "Fire7345s4kRes.thumbs/Fire 66 - 45s - 4k res_000037.jpg",
+   "source": "derivative",
+   "format": "Thumbnail",
+   "original": "Fire 66 - 45s - 4k res.mp4",
+   "mtime": "1404586135",
+   "size": "6129",
+   "md5": "1ed23d479be30e049483361c54fb3d38",
+   "crc32": "dd521ee3",
+   "sha1": "4a1c6b0904dbf6641c28ee38885edc19ada4a2da"
+  },
+  {
+   "name": "Fire7345s4kRes.thumbs/Fire 66 - 45s - 4k res_000042.jpg",
+   "source": "derivative",
+   "format": "Thumbnail",
+   "original": "Fire 66 - 45s - 4k res.mp4",
+   "mtime": "1404586143",
+   "size": "6347",
+   "md5": "dfd85654187633e8ed4ee48510dcdaf0",
+   "crc32": "6f93d642",
+   "sha1": "0b8804e333309bffedd0d35db193f2e4b6236b05"
+  },
+  {
+   "name": "Fire7345s4kRes.thumbs/Fire 66 - 45s - 4k res_000047.jpg",
+   "source": "derivative",
+   "format": "Thumbnail",
+   "original": "Fire 66 - 45s - 4k res.mp4",
+   "mtime": "1404586152",
+   "size": "7527",
+   "md5": "03f413c12ca6efcec065df76ba965a24",
+   "crc32": "9d99bcf5",
+   "sha1": "fc73bb2ba810476b9d38827bad8ec1418fd418d3"
+  },
+  {
+   "name": "Fire7345s4kRes.thumbs/Fire 66 - 45s - 4k res_000052.jpg",
+   "source": "derivative",
+   "format": "Thumbnail",
+   "original": "Fire 66 - 45s - 4k res.mp4",
+   "mtime": "1404586161",
+   "size": "3973",
+   "md5": "88d2eaf75935f5ec5f062bd32ed2f714",
+   "crc32": "acfa7fa5",
+   "sha1": "675612ed334f4c759d30ed41de710eee2bbda478"
+  },
+  {
+   "name": "Fire 67 small.mp4",
+   "source": "original",
+   "format": "h.264",
+   "length": "20.0",
+   "width": "1920",
+   "height": "1080",
+   "size": "1000"
+  }
+ ],
+ "metadata": {
+  "identifier": "Fire7345s4kRes",
+  "title": "Fire - Clips 66-75 - 4k Res - Free Stock Footage",
+  "creator": "Mitch Martinez",
+  "subject": [
+   "fire",
+   "slow motion",
+   "fire stock footage",
+   "stock footage",
+   "free stock footage",
+   "4k",
+   "mitch martinez"
+  ],
+  "licenseurl": "http://creativecommons.org/licenses/by-nc-nd/3.0/"
+ }
+}

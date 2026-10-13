@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <assemblyIdentity version="1.0.0.0" name="Win4KSS.app" />
+
+  <!-- Run as invoker. A screen saver must never prompt for elevation: Windows launches it
+       from the idle timer with no interactive consent path. -->
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
+    <security>
+      <requestedPrivileges xmlns="urn:schemas-microsoft-com:asm.v3">
+        <requestedExecutionLevel level="asInvoker" uiAccess="false" />
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 / 11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}" />
+      <!-- Windows 8.1 -->
+      <supportedOS Id="{1f676c76-80e1-4239-95bb-83d0f6d0da78}" />
+    </application>
+  </compatibility>
+
+  <!-- DPI awareness is deliberately NOT set here. Modern WinForms owns it via the
+       ApplicationHighDpiMode project property (PerMonitorV2) applied by
+       ApplicationConfiguration.Initialize() before the first HWND exists; declaring it in
+       the manifest as well trips warning WFO0003 and the two can disagree.
+       Getting DPI wrong is what made cdima/aerial mis-size on mixed-DPI multi-monitor setups. -->
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+    </windowsSettings>
+  </application>
+</assembly>

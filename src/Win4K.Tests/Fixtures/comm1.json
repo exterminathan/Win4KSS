@@ -1,0 +1,17 @@
+{
+ "assets": [
+  {
+   "timeOfDay": "sunset",
+   "accessibilityLabel": "Florida",
+   "title": "Miami",
+   "scene": "city",
+   "id": "video_inspire_florida_miami_brickell_sunset_00036",
+   "url-4K-SDR": "https://github.com/glouel/AerialCommunity/releases/download/mw2-4k-sdr/video_inspire_florida_miami_brickell_sunset_00036.4k-sdr.mov",
+   "url-1080-SDR": "https://github.com/glouel/AerialCommunity/releases/download/mw2-1080p-sdr/video_inspire_florida_miami_brickell_sunset_00036.1080-sdr.mov",
+   "url-1080-H264": "https://github.com/glouel/AerialCommunity/releases/download/mw2-1080p-h264/video_inspire_florida_miami_brickell_sunset_00036.1080-h264.mov",
+   "pointsOfInterest": {
+    "0": "video_inspire_florida_miami_brickell_sunset_00036_0"
+   }
+  }
+ ]
+}

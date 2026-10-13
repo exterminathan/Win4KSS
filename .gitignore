@@ -1,0 +1,24 @@
+# Build output
+bin/
+obj/
+publish/
+*.user
+
+# libmpv is fetched by scripts/fetch-libmpv.ps1 — ~114 MB, never commit it.
+# native/tools holds the bootstrapped 7zr.exe used to unpack it.
+native/mpv/
+native/tools/
+
+# Local runtime state (cache, settings, extracted native libs) never lives in the repo,
+# but ignore it here in case anyone points the cache root at the source tree while debugging.
+.local/
+*.log
+
+# Claude Code: per-machine settings and agent worktrees
+.claude/settings.local.json
+.claude/worktrees/
+
+# Visual Studio / Rider
+.vs/
+.idea/
+*.suo

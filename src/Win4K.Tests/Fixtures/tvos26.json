@@ -1,0 +1,103 @@
+{
+ "assets": [
+  {
+   "categories": [
+    "55B7C95D-CEAF-4FD8-ADEF-F5BC657D8F6D"
+   ],
+   "previewImage-900x580": "",
+   "pointsOfInterest": {
+    "32": "GMT026_363A_103NC_E1027_32",
+    "195": "GMT026_363A_103NC_E1027_195",
+    "110": "GMT026_363A_103NC_E1027_110",
+    "0": "GMT026_363A_103NC_E1027_0",
+    "22": "GMT026_363A_103NC_E1027_22",
+    "150": "GMT026_363A_103NC_E1027_150",
+    "260": "GMT026_363A_103NC_E1027_260",
+    "180": "GMT026_363A_103NC_E1027_180",
+    "60": "GMT026_363A_103NC_E1027_60"
+   },
+   "localizedNameKey": "GMT026_363A_103NC_E1027_KOREA_JAPAN_NIGHT_NAME",
+   "showInTopLevel": true,
+   "shotID": "GMT026_363A_103NC_E1027_KOREA_JAPAN_NIGHT",
+   "includeInShuffle": true,
+   "id": "009BA758-7060-4479-8EE8-FB9B40C8FB97",
+   "url-4K-HDR": "https://sylvan.apple.com/itunes-assets/Aerials116/v4/5f/8d/d7/5f8dd7a6-37aa-cf2f-8b06-931ea6a4054f/comp_GMT026_363A_103NC_E1027_KOREA_JAPAN_NIGHT_v18_HDR_PS_20180907_HDR_4K_HEVC.mov",
+   "url-1080-SDR": "https://sylvan.apple.com/itunes-assets/Aerials116/v4/5f/8d/d7/5f8dd7a6-37aa-cf2f-8b06-931ea6a4054f/comp_GMT026_363A_103NC_E1027_KOREA_JAPAN_NIGHT_v18_SDR_PS_20180907_SDR_2K_HEVC.mov",
+   "url-4K-SDR": "https://sylvan.apple.com/itunes-assets/Aerials116/v4/5f/8d/d7/5f8dd7a6-37aa-cf2f-8b06-931ea6a4054f/comp_GMT026_363A_103NC_E1027_KOREA_JAPAN_NIGHT_v18_SDR_PS_20180907_SDR_4K_HEVC.mov",
+   "subcategories": [
+    "61171241-39F3-4ADE-84AA-9CD4EE4A78DA"
+   ],
+   "url-1080-H264": "https://sylvan.apple.com/itunes-assets/Aerials116/v4/97/e9/06/97e90616-1227-c670-6118-bd5ae991b43b/comp_GMT026_363A_103NC_E1027_KOREA_JAPAN_NIGHT_v18_SDR_PS_20180907_SDR_2K_AVC.mov",
+   "preferredOrder": 9,
+   "accessibilityLabel": "Korea and Japan Night",
+   "previewImage": "https://sylvan.apple.com/itunes-assets/Aerials221/v4/86/53/43/8653438c-a104-77a0-ce9a-8a370d39795f/GMT026_363A_900x580.png",
+   "url-1080-HDR": "https://sylvan.apple.com/itunes-assets/Aerials116/v4/5f/8d/d7/5f8dd7a6-37aa-cf2f-8b06-931ea6a4054f/comp_GMT026_363A_103NC_E1027_KOREA_JAPAN_NIGHT_v18_HDR_PS_20180907_HDR_2K_HEVC.mov"
+  },
+  {
+   "url-4K-HDR": "https://sylvan.apple.com/itunes-assets/Aerials116/v4/e6/1a/ca/e61acac6-1c10-41a6-b796-7dc03fbc4517/W014_C018_F01_4K_DoVi.mov",
+   "url-1080-HDR": "https://sylvan.apple.com/itunes-assets/Aerials116/v4/e6/1a/ca/e61acac6-1c10-41a6-b796-7dc03fbc4517/W014_C018_F01_2K_DoVi.mov",
+   "localizedNameKey": "W014_C018_F01_NAME",
+   "includeInShuffle": true,
+   "categories": [
+    "A33A55D9-EDEA-4596-A850-6C10B54FBBB5"
+   ],
+   "id": "F390FE3B-FA61-483D-BADC-2447F89951BA",
+   "shotID": "W014_C018_F01",
+   "accessibilityLabel": "California Wildflowers",
+   "showInTopLevel": true,
+   "pointsOfInterest": {
+    "0": "W014_C018_0"
+   },
+   "url-1080-H264": "https://sylvan.apple.com/itunes-assets/Aerials116/v4/e6/1a/ca/e61acac6-1c10-41a6-b796-7dc03fbc4517/W014_C018_F01_2K_AVC.mov",
+   "previewImage-900x580": "",
+   "previewImage": "https://sylvan.apple.com/itunes-assets/Aerials221/v4/86/53/43/8653438c-a104-77a0-ce9a-8a370d39795f/W014_C018_900x580.png",
+   "subcategories": [
+    "7C6A4BFE-F9F3-48E2-A2D7-BE34A04DB354"
+   ],
+   "preferredOrder": 6,
+   "group": "21J-1",
+   "url-1080-SDR": "https://sylvan.apple.com/itunes-assets/Aerials116/v4/e6/1a/ca/e61acac6-1c10-41a6-b796-7dc03fbc4517/W014_C018_F01_2K_HEVC.mov",
+   "url-4K-SDR": "https://sylvan.apple.com/itunes-assets/Aerials116/v4/e6/1a/ca/e61acac6-1c10-41a6-b796-7dc03fbc4517/W014_C018_F01_4K_HEVC.mov"
+  }
+ ],
+ "categories": [
+  {
+   "id": "A33A55D9-EDEA-4596-A850-6C10B54FBBB5",
+   "localizedNameKey": "AerialCategoryLandscapes",
+   "localizedDescriptionKey": "AerialCategoryLandscapesDescription",
+   "preferredOrder": 0,
+   "previewImage": "https://sylvan.apple.com/Aerials/jjGqDwCNrOsVJ4of6uSVr/snapshots/GL_G010_C006.jpg",
+   "representativeAssetID": "EE01F02D-1413-436C-AB05-410F224A5B7B",
+   "subcategories": [
+    {
+     "id": "7C6A4BFE-F9F3-48E2-A2D7-BE34A04DB354",
+     "localizedNameKey": "AerialSubcategorySuperbloom",
+     "previewImage": "",
+     "localizedDescriptionKey": "AerialSubcategoryDescriptionSuperbloom",
+     "representativeAssetID": "F390FE3B-FA61-483D-BADC-2447F89951BA",
+     "preferredOrder": 5
+    }
+   ]
+  },
+  {
+   "representativeAssetID": "1088217C-1410-4CF7-BDE9-8F573A4DBCD9",
+   "id": "55B7C95D-CEAF-4FD8-ADEF-F5BC657D8F6D",
+   "subcategories": [
+    {
+     "preferredOrder": 10,
+     "localizedDescriptionKey": "AerialSubcategoryDescriptionKoreaandJapanNight",
+     "localizedNameKey": "AerialSubcategoryKoreaandJapanNight",
+     "representativeAssetID": "009BA758-7060-4479-8EE8-FB9B40C8FB97",
+     "id": "61171241-39F3-4ADE-84AA-9CD4EE4A78DA",
+     "previewImage": "https://sylvan.apple.com/Aerials/jjGqDwCNrOsVJ4of6uSVr/snapshots/GMT026_363A_103NC_E1027_KOREA_JAPAN_NIGHT.jpg"
+    }
+   ],
+   "preferredOrder": 3,
+   "previewImage": "https://sylvan.apple.com/Aerials/jjGqDwCNrOsVJ4of6uSVr/snapshots/GMT329_2_113NC_396B_1105.jpg",
+   "localizedDescriptionKey": "AerialCategorySpaceDescription",
+   "localizedNameKey": "AerialCategorySpace"
+  }
+ ],
+ "version": 1,
+ "initialAssetCount": 2
+}
