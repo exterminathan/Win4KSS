@@ -4,6 +4,9 @@ obj/
 publish/
 *.user
 
+# installer/*.iss and scripts/build-installer.ps1 are committed; the compiled .exe is not.
+installer/output/
+
 # libmpv is fetched by scripts/fetch-libmpv.ps1 — ~114 MB, never commit it.
 # native/tools holds the bootstrapped 7zr.exe used to unpack it.
 native/mpv/

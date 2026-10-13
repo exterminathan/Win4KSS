@@ -1,0 +1,19 @@
+Before you install Win4KSS
+===========================
+
+Win4KSS is an UNOFFICIAL screen saver. It is not made by, affiliated with, endorsed by,
+or supported by Apple Inc. "Aerial" and Apple TV are trademarks of Apple Inc. Win4KSS
+plays video streamed from Apple's own public Aerials CDN alongside clips from other
+public sources (the Internet Archive, NASA, and a few vendor/community "ambient TV"
+feeds) -- it does not create, own, or claim any rights to that video.
+
+Some of what it plays is licensed non-commercially (for example, a large share of the
+Internet Archive clips are CC BY-NC-ND -- no commercial use, no modified re-uploads).
+See THIRD-PARTY-NOTICES.md, installed alongside the app, for the specifics of what
+comes from where and under what terms. This installer and the app itself are free; the
+video is not yours to resell or redistribute on its own.
+
+This build also bundles libmpv, which pulls in FFmpeg built with GPL components. THIRD-
+PARTY-NOTICES.md says plainly what that means and where to get the matching source.
+
+Click Next to continue, or Cancel if that is not what you were expecting to install.
