@@ -1,10 +1,14 @@
 # Win4KScreensavers — Implementation Plan
 
-> **Status: all eight phases complete** (2026-08-12). 127 tests green. The one remaining
-> manual step is running `scripts/install-scr.ps1`, which needs elevation to write System32.
+> **Status: all eight phases complete** (2026-08-12), plus the clip browser and streaming
+> reliability work as phases 9–15 (2026-10-13; plan in
+> [docs/squishy-teacup-plan.md](docs/squishy-teacup-plan.md)). 483 tests green. The one
+> remaining manual step is `scripts/install-scr.ps1 -SetAsDefault`, which needs elevation to
+> write System32.
 >
-> What the build actually taught us is in **[Findings](#findings-from-implementation)** at the
-> bottom — three of them contradicted assumptions in this plan.
+> This document is the original design; the clip-browser plan supersedes its Settings section
+> (`/c` is now a WebView2 browser, not a tabbed dialog) and its Layout. What the build actually
+> taught us is in **[Findings](#findings-from-implementation)** at the bottom.
 
 ## Context
 
@@ -190,8 +194,22 @@ Each phase ends in something runnable.
 | 8 | Packaging + `install-scr.ps1` incl. hotkey shortcuts | single `.scr`, installable, `Ctrl+Alt+S` works | ☑ |
 
 Added beyond the original plan: the harvested **clip registry** (`assets/registry`) is wired in
-as opt-in extra sources via `RegistryCatalogSource` — 1,358 further 4K clips from Archive.org,
-NASA and mirrored aerial manifests, all in Apple's schema so they reuse the same parser.
+as extra sources via `RegistryCatalogSource` — 1,358 further 4K clips from Archive.org,
+NASA and mirrored aerial manifests (1,577 since the 2026-10-13 re-harvest), all in Apple's
+schema so they reuse the same parser.
+
+Phases 9–15 are the **clip browser + streaming reliability** plan,
+[docs/squishy-teacup-plan.md](docs/squishy-teacup-plan.md) (its phases A–G):
+
+| # | Phase | Ends with | Done |
+|---|---|---|---|
+| 9 (A) | Streaming reliability — URL escaping, no idle stalls, watchdog, retry/backoff, failure policy, download-ahead, `IMpvPlayer` seam | uncached archive clips stream; one failure no longer blacks out the saver | ☑ |
+| 10 (B) | Unified clip model (`ClipInfo`, `ClipKey`, `TagBuilder`, `ClipMerger`) + catalogue harvesting in C#; `harvest.py` retired | `ClipLibrary` merges every source; in-app refresh at parity | ☑ |
+| 11 (C) | Cache pins, `DownloadQueue` (`queue.json`), cross-process mutexes, partials kept for resume | browser and saver share one cache safely; pins survive restarts | ☑ |
+| 12 (D) | `MediaPreviewService` — 480 px stills, 4 s hover clips, 1 GB LRU | previews for every source | ☑ |
+| 13 (E) | WebView2 clip browser on `/c` (`BrowserForm`, `BrowserBridge`, `Browser/ui/`); `SettingsForm` deleted | filter, sort, hover-play, live preview, pin, refresh | ☑ |
+| 14 (F) | Settings v2 (`RotationKeys`/`KeptOffline`/`AutoAddSources`/`KnownKeys`), v1→v2 migration, per-clip rotation in the saver | the saver plays exactly what the browser selects | ☑ |
+| 15 (G) | Docs | CLAUDE.md and this file current | ☑ |
 
 **Phase 2 is the risk gate** — libmpv embedding is the one assumption that would force a redesign, so it lands before any cache or UI work.
 
@@ -221,7 +239,8 @@ NASA and mirrored aerial manifests, all in Apple's schema so they reuse the same
 
 ## Findings from implementation
 
-Five things the build turned up. Three contradicted this plan as written.
+Findings 1–7 come from the original build (phases 0–8); 8 onwards from the clip-browser
+phases 9–15.
 
 ### 1. `sylvan.apple.com` fails TLS on Windows — twice, in two different stacks
 
@@ -292,3 +311,79 @@ debugging a saver that "will not start".
 Every failed clip spawned a `yt-dlp` subprocess and waited about a second for it to fail.
 For direct video URLs the hook can never succeed, and a screen saver spawning subprocesses is
 its own problem. Disabled with `ytdl=no`.
+
+### 8. The archive-org "23% failure rate" was three bugs of ours, and the plan found two
+
+The clip-browser plan diagnosed two causes before Phase A: `Uri.ToString()` unescaping `%20`
+into a space, which libcurl rejects (163/163 uncached archive streams failed with mpv `-13`),
+and mpv going idle after an instant failure, which `loadfile … append` cannot restart from
+(165 of 169 failures left a black screen until dismissal, median 1.6 h). The "23%" understated
+both, because a stalled saver stopped loading clips.
+
+A third cause only showed once those were fixed: **an expired ISRG Root X2 cross-sign** from
+the Windows intermediate store sat in `ca-bundle.pem`. libcurl's OpenSSL checks the bundle
+first, picked the expired certificate over the valid chain the server sent, and failed TLS on
+every archive.org download host, since they redirect to Let's Encrypt-signed hosts. `CaBundle`
+now excludes any certificate outside its validity period, and `CaBundleTests` guards it.
+
+### 9. `harvest.py` silently lost every NASA clip with a space in its id
+
+The plan's parity check expected the C# harvesters to match the Python counts (1060 / 289 / 9).
+NASA came back with **19**: `urllib` refuses a URL containing a space, and harvest.py swallowed
+the error, so it skipped 10 clips without a word. The C# set is a strict superset.
+
+### 10. archive.org grew underneath the parity check
+
+archive-org went from **1060** files (2026-08-12) to **1316** upstream, so the counts could not
+match. Parity was checked instead as same-day identical URL sets for archive-org (1316) and
+aerial-manifests (289). The mirror dedupe the plan described as `*_201507` turned out to be
+`_YYYYMM` re-uploads in general: 47 dropped, leaving 1269.
+
+### 11. 20 MB head-segment previews are not the cheap route
+
+The plan had previews Range-fetch the first ~20 MB through `HttpClient` and fall back to
+ffmpeg-over-HTTPS only for tail-indexed files. Every Apple and Amazon `.mov` keeps `moov` at
+the tail, so the head is useless for them; `Mp4Boxes.IndexIsBeyond` spots this after 64 KB.
+On archive.org (~1.3 MB/s) the head route took **~22 s and 27 MB** per hover clip, against
+**~7.6 s** for ffmpeg's own input seek. Head segments remain the default behind
+`MediaPreviewOptions.UseHeadSegments`.
+
+Three more preview assumptions were wrong. ffmpeg here is a GnuTLS build whose `tls_verify`
+**defaults to 0**, so `-ca_file` alone checked nothing; previews pass `-tls_verify 1` too.
+archive.org `.thumbs` are 160 px, not usable 480 px stills, so stills are upgraded from a
+hover clip's frame. Hover clips need `-pix_fmt yuv420p`, because 10-bit sources otherwise
+produce High 10 H.264, which Chromium cannot play.
+
+### 12. WinForms undoes `SetParent` after `OnHandleCreated` — the `/p` leak
+
+The preview thumbnail attached to Windows' HWND in `OnHandleCreated`. WinForms resets a
+top-level form's parent after that call, silently undoing `SetParent`. The preview became an
+orphaned child of the desktop that nothing destroyed, and `/p` processes leaked for hours.
+Attaching in `OnLoad` fixes it, and `PreviewLifetime` polls the parent HWND every second as a
+backstop.
+
+### 13. Cross-process caching needed a download owner, not just an index lock
+
+The plan specified one named mutex around the cache index. Two processes downloading pins
+would still race for the same files, so a second mutex, `DownloadQueueOwner`, picks one
+process to own the queue. The first to start owns it, and the saver takes over when the
+browser exits. Both mutex names carry a hash of the cache root, so two cache folders never
+contend.
+
+### 14. `KnownKeys` cannot drive the New tag
+
+Settings v2 planned `KnownKeys` for detecting new clips. The saver merges new keys into it on
+every run, so a clip would lose its New tag the first time the saver ran. `KnownKeys` only
+drives auto-add; New comes from the catalogue's first-seen `addedUtc`.
+
+### 15. Smaller surprises
+
+- **Test isolation:** tests that set `WIN4K_HOME` were flipping a process-wide variable under
+  every other test running in parallel, which made `CaBundleTests` fail intermittently.
+  Replaced by an `AsyncLocal` scope, `AppPaths.UseRoot`.
+- **WebView2's NuGet package drags in its WPF assembly**, which references WindowsBase 5.0 and
+  trips MSB3277 in a WinForms-only project. The csproj removes that reference.
+- **The page and host were built in parallel lanes against one contract**, and the first
+  integration run still missed the handshake: the host waits for `ready`, and the page never
+  posted it. The page now posts `ready` once every handler is registered. Chromium also
+  re-sorts the keys of posted JSON, so key order means nothing on either side.
