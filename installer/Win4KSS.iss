@@ -274,7 +274,14 @@ end;
 // the captured stderr but the install carries on, 2 (or anything else unexpected) a louder but
 // still non-fatal warning. Never raises/aborts: settings export/import is a nice-to-have next
 // to a working install of the screen saver itself, never a reason to fail the whole thing.
-procedure RunSettingsCliAndWarn(const ExePath, Args, FailureContext: String);
+//
+// ShowFailureBox: False turns the two MsgBox calls below into Log()-only, for a caller whose
+// failure genuinely does not deserve a pop-up -- the post-upgrade bonus export below is the
+// one such case: it is a nicer-to-read extra on top of PrepareToInstall's real settings.json
+// backup, and an upgrading user should not see a dialog about something optional failing.
+// The fresh-install import (ImportSettingsIfChosen) keeps ShowFailureBox True: the user just
+// explicitly asked to import a specific file, so if that fails, they should be told.
+procedure RunSettingsCliAndWarn(const ExePath, Args, FailureContext: String; const ShowFailureBox: Boolean);
 var
   ExitCode: Integer;
   StdErr: AnsiString;
@@ -291,14 +298,16 @@ begin
     1:
       begin
         Log(FailureContext + ': ' + StdErr);
-        MsgBox(FailureContext + ':' + #13#10#13#10 + String(StdErr) + #13#10#13#10 +
-               'This does not affect the rest of the install.', mbInformation, MB_OK);
+        if ShowFailureBox then
+          MsgBox(FailureContext + ':' + #13#10#13#10 + String(StdErr) + #13#10#13#10 +
+                 'This does not affect the rest of the install.', mbInformation, MB_OK);
       end;
   else
     begin
       Log(FailureContext + ': unexpected exit code ' + IntToStr(ExitCode) + '. ' + StdErr);
-      MsgBox(FailureContext + ' failed unexpectedly (exit code ' + IntToStr(ExitCode) + '):' + #13#10#13#10 +
-             String(StdErr) + #13#10#13#10 + 'This does not affect the rest of the install.', mbInformation, MB_OK);
+      if ShowFailureBox then
+        MsgBox(FailureContext + ' failed unexpectedly (exit code ' + IntToStr(ExitCode) + '):' + #13#10#13#10 +
+               String(StdErr) + #13#10#13#10 + 'This does not affect the rest of the install.', mbInformation, MB_OK);
     end;
   end;
 end;
@@ -355,7 +364,7 @@ begin
   if ImportSettingsFile <> '' then
     RunSettingsCliAndWarn(ExpandConstant('{app}\{#MyAppExeName}'),
       '--import-settings "' + ImportSettingsFile + '"',
-      'Importing settings from ' + ImportSettingsFile);
+      'Importing settings from ' + ImportSettingsFile, True);
 end;
 
 // Once every file is on disk (ssPostInstall), makes a human-readable *.win4kss.json export of
@@ -369,7 +378,7 @@ begin
   if (CurStep = ssPostInstall) and ExistingInstallDetected then
     RunSettingsCliAndWarn(ExpandConstant('{app}\{#MyAppExeName}'),
       '--export-settings "' + ExpandConstant('{localappdata}\Win4KScreensavers\pre-upgrade-settings.win4kss.json') + '"',
-      'Making a readable export of your settings before the upgrade');
+      'Making a readable export of your settings before the upgrade', False);
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
