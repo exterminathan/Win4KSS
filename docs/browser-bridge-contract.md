@@ -1,21 +1,28 @@
 # Browser ↔ host bridge contract (Phase E)
 
 This is the interface the Phase E browser UI (WebView2 page) is built against. It
-reflects the **real C# types already in this repo** — Phases A–C, Phase D's
-`MediaPreviewService`, and Phase F's settings-v2 contract fields are all landed on
-`main`. Corrected 2026-10-13 against win4kscreensavers-67's actual implementation;
-earlier enum/field names in this doc (`Verifying`, `Canceled`, `IMediaPreviewService`,
-bare preview `path`) were wrong — this revision is the source of truth.
+reflects the **real C# types already in this repo** — Phases A–D and F are all landed
+on `main` (`7aae289`). Corrected 2026-10-13 against win4kscreensavers-67's actual
+implementation; earlier enum/field names in this doc (`Verifying`, `Canceled`,
+`IMediaPreviewService`, bare preview `path`, `enabledCatalogIds` in `settings`) were
+wrong — this revision is the source of truth.
+
+**Lane split (2026-10-13):** 67 owns `BrowserBridge.cs`, `BrowserForm.cs`, the WebView2
+`.csproj` reference, `Program.cs`'s `/c` wiring, and deleting `SettingsForm.cs` — all on
+`main`, because it has to compile and run on Windows. The UI lane (this contract's
+other reader) owns **only** `src/Win4K.ScreenSaver/Browser/ui/*` and
+`docs/browser-mock/*`. **Do not write `BrowserBridge.cs`** — 67 is coding it to this
+doc independently; the two sides meet at this contract, not by one side writing both.
 
 See `squishy-teacup-plan.md` for the full plan this implements.
 
 ## Why this doc exists
 
-The browser (HTML/CSS/JS under `src/Win4K.ScreenSaver/Browser/ui/`) is being built on
-a machine that can't compile or run this Windows-only project. It is built against a
+The browser UI (HTML/CSS/JS under `src/Win4K.ScreenSaver/Browser/ui/`) is being built
+on a machine that can't compile or run this Windows-only project. It is built against a
 **mock bridge** — a hand-written JSON fixture + a tiny `window.chrome.webview` shim —
 that must match these real shapes exactly, so wiring it to the real `BrowserBridge.cs`
-later is mechanical.
+(built separately, on `main`) is mechanical, not a negotiation.
 
 ## Source types (read these, don't guess)
 
@@ -27,7 +34,9 @@ later is mechanical.
 - `src/Win4K.Core/Media/MediaPreviewService.cs` + `PreviewIndex.cs` — `PreviewState`, `PreviewKind`, `PreviewCapabilities`, `PreviewStats`, `Request`/`Get`/`Stats`, `VirtualHost = "previews.win4k"`. **No `IMediaPreviewService` interface exists — the concrete class is the contract.**
 - `src/Win4K.Core/Playback/ClipHealth.cs` — `ClipHealth.IsUnhealthy(settings, key)`, static, `FailedClips` count ≥ 3. There is no health enum.
 - `src/Win4K.Core/Catalogs/CatalogRefresher.cs` — `RefreshAsync(sourceIds?, IProgress<CatalogRefreshProgress>?, ct)`
-- `src/Win4K.Core/Settings/AppSettings.cs` — **v2, landed.** `RotationKeys`, `AutoAddSources`, `KnownKeys` are real `HashSet<string>` fields keyed by `ClipInfo.Key` (same value as `Clip.Id`), alongside the existing `KeptOffline`. `FfmpegPath` is `string?`. `FailedClips` is `Dictionary<string,int>`. `SelectedClipIds`, `EnabledCatalogIds` and `SourceMode` are retired by the v1→v2 migration — don't build UI against them.
+- `src/Win4K.Core/Settings/AppSettings.cs` — **v2, landed.** `RotationKeys`, `AutoAddSources`, `KnownKeys` are real `HashSet<string>` fields keyed by `ClipInfo.Key` (same value as `Clip.Id`), alongside the existing `KeptOffline`. `FfmpegPath` is `string?`. `FailedClips` is `Dictionary<string,int>`. `SelectedClipIds`, `EnabledCatalogIds` and `SourceMode` are **null and retired** — don't build UI against them; see the `settings` message below, which no longer sends `enabledCatalogIds`.
+- `src/Win4K.Core/Settings/Rotation.cs` — static helper the host uses, not something the page calls directly, but it shapes what `setRotation`/`setAutoAdd` actually do: `SetInRotation(settings, keys, bool)`, `SetAutoAdd(settings, sourceId, bool)` (future clips only — pairing it with `SetInRotation(Rotation.KeysOf(catalogue, sourceId))` is how existing clips get included), `IsInRotation`, `SourceIds`, `SourceOf(ClipInfo)`.
+- `src/Win4K.Core/Settings/SettingsMigrator.cs` — `Prepare(settings, catalogue)`, called once by the host right after loading the catalogue (v1→v2 migration). Nothing the page calls.
 
 ### Exact enum members (don't guess — these were wrong in an earlier draft of this doc)
 - `DownloadState`: `Queued, Waiting, Downloading, Done, Failed, Cancelled` — no `Verifying`; `Waiting` means another process holds the partial; note the double-L spelling of `Cancelled`.
@@ -106,6 +115,7 @@ Subject, TimeOfDay, Resolution, Aspect, DynamicRange, Duration, Codec, Licence, 
 ```
 - `download.state` mirrors `DownloadState` exactly: `Queued|Waiting|Downloading|Done|Failed|Cancelled`.
 - `health` is derived by the host from `ClipHealth.IsUnhealthy(settings, key)` and sent as the string `"Ok"` or `"Unhealthy"` (there's no C# health enum — this mapping happens in `BrowserBridge.cs`). Use `Unhealthy` to render the tag.
+- `isNew` comes from `TagBuilder.IsNew(clip, nowUtc)` (`AddedUtc` within 30 days) — **never** derive "new" on the page from anything else; there's no `KnownKeys`-based signal in this message.
 - This message can be partial (only changed clips) or full; the page must merge by key, never replace the whole map.
 
 ### `previewReady`
@@ -124,13 +134,15 @@ Subject, TimeOfDay, Resolution, Aspect, DynamicRange, Duration, Codec, Licence, 
   "values": {
     "quality": "Auto", "multiMonitorMode": "MainOnly", "shuffle": true, "useTimeOfDay": true,
     "cacheEnabled": true, "cacheDirectory": "C:\\Users\\...\\cache", "cacheBudgetGb": 20.0,
-    "localFolders": [], "enabledCatalogIds": ["apple", "archive-org"], "ffmpegPath": null,
-    "autoAddSources": ["apple"], "previewCapabilities": { "ffmpegAvailable": true, "hoverClips": true }
+    "localFolders": [], "ffmpegPath": null,
+    "autoAddSources": ["apple"], "availableSources": ["apple", "archive-org", "nasa", "aerial-manifests:apple-tvos26", "aerial-manifests:amazon-fireos8"],
+    "previewCapabilities": { "ffmpegAvailable": true, "hoverClips": true }
   }
 }
 ```
-`autoAddSources` is a real field now (`AppSettings.AutoAddSources`, landed in Phase F)
-— the host sends it as-is, no synthesizing needed.
+- **No `enabledCatalogIds`** — that field is retired in v2 (`SourceMode`/`EnabledCatalogIds`/`SelectedClipIds` are all null now). Every source is always resolved; what plays is purely per-clip rotation (`stateDelta.inRotation`) plus per-source `autoAddSources`.
+- `availableSources` is the full list of source ids to render the per-source auto-add toggle row against (derived from `Rotation.SourceIds`, not a settings field itself — the host computes it from the loaded catalogue).
+- `autoAddSources` is `AppSettings.AutoAddSources`, landed in Phase F — the host sends it as-is.
 
 ### `cacheStats`
 ```json
@@ -141,7 +153,8 @@ Subject, TimeOfDay, Resolution, Aspect, DynamicRange, Duration, Codec, Licence, 
 
 | Message | Payload | Maps to |
 |---|---|---|
-| `setRotation` | `{ keys: string[], value: bool }` | rotation set add/remove (Phase F `RotationKeys`) |
+| `setRotation` | `{ keys: string[], value: bool }` | `Rotation.SetInRotation(settings, keys, value)` |
+| `setAutoAdd` | `{ sourceId: string, value: bool, includeExisting?: bool }` | `Rotation.SetAutoAdd(settings, sourceId, value)`; `value: true` with `includeExisting: true` also calls `Rotation.SetInRotation(settings, Rotation.KeysOf(catalogue, sourceId), true)`. The UI's per-source toggle should prompt "also add the existing N clips?" (N = count of that source's clips not yet in rotation) and send `includeExisting` from the answer — don't silently default it either way. |
 | `setPinned` | `{ keys: string[], value: bool }` | `PinManager.Pin`/`Unpin`; on `Pin`, host first runs `CanPin` and may reply with a one-off `pinRefused` message (see below) instead of a `stateDelta` |
 | `selectClip` | `{ key: string \| null }` | drives the native mpv preview panel the host positions over the detail pane's video rect (see `panelRect` below) |
 | `panelRect` | `{ x, y, width, height, visible: bool }` | page tells host where to position the native preview `HWND`, in page-relative CSS pixels; sent on resize/scroll/select |
@@ -172,19 +185,9 @@ Shape mirrors `PinCheck` (`RequiredGb`, budget, `ShortfallBytes`). Page should o
    `app.css`, `app.js`, vanilla JS, no build step, no CDN — see plan Phase E) against
    that shim. They must not import the shim in production — it's dev-only, loaded by a
    separate `dev.html` harness, not `index.html`.
-4. Also write `src/Win4K.ScreenSaver/Browser/BrowserBridge.cs` implementing the message
-   types above against the real C# types. This **will not compile** on this machine
-   (net10.0-windows, WebView2) — that's expected. It gets compiled and wired to a real
-   `BrowserForm` locally. Keep it a plain class with no WinForms/WebView2 types in its
-   public surface beyond `string SendToPage(string json)` / `void OnPageMessage(string
-   json)` methods, so it's easy to unit test later with `Win4K.Tests`. Construction
-   roughly follows:
-   - `ClipLibrary.LoadAsync(settings?)` → `IReadOnlyList<ClipInfo>` for the `catalog` message.
-   - `TagBuilder.Build(clip, ClipState flags, now)` for each clip's `tags`.
-   - `new PinManager(settings, cache, queue, save?)`, then `SetCatalog`, `SyncPins`, `CanPin`/`Pin`/`Unpin`/`IsPinned`.
-   - `new DownloadQueue(cache, options?)`, `Enqueue`/`EnqueuePlayed`/`Cancel`/`Snapshot`/`Get`; subscribe `JobChanged`/`Progress`/`OwnershipChanged` (any thread — marshal before touching WebView2).
-   - `new MediaPreviewService(settings, cache?, options?)`, then `SetCatalog`, `Start(backgroundFill: true)`; subscribe `PreviewUpdated` (worker thread — marshal) → emit `previewReady`.
-   - `cache.Stats()` (pinned/rolling/free bytes) for `cacheStats`; subscribe `cache.Changed` (background thread — marshal).
-   - `CatalogRefresher.RefreshAsync(sourceIds?, progress?, ct)` for `refreshCatalogs`.
+4. **Do not write `BrowserBridge.cs`.** 67 owns the whole C# side of Phase E
+   (`BrowserBridge.cs`, `BrowserForm.cs`, the WebView2 `.csproj` reference, `Program.cs`'s
+   `/c` wiring, deleting `SettingsForm.cs`) on `main`, building it to this contract
+   independently. The UI lane's job ends at the JSON messages above and the mock harness.
 5. Leave `TODO(local)` comments anywhere you had to guess at a detail you couldn't
    verify from the source — grep for them before merging.
