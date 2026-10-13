@@ -12,7 +12,7 @@ Built for one user, on one machine, for personal use. Git repo with a private Gi
 
 Installed at `%LOCALAPPDATA%\Programs\Win4KSS\` (renamed from `Win4KAerial` 2026-10-12; `install-scr.ps1` removes the old files and repoints `SCRNSAVE.EXE`) with Desktop + Start Menu shortcuts bound to `Ctrl+Alt+S`. The walk-away chain was observed end to end: shortcut → `StartNow` → Windows launched our saver → 1500 ms manual grace → playing from cache. In daily use since 2026-08-14 as the idle saver (30-min timeout); the cache sits at its 20 GB budget, so LRU eviction is active.
 
-**The installed build is from 2026-10-12** (rename, `/p` leak fix, Phase A streaming fixes). Phases B–F are in `publish/` only, so `/c` there is still the old settings dialog and `settings.json` is still v1 — reinstall with `scripts/install-scr.ps1` to pick them up (the first run migrates settings to v2).
+**The installed build matches `publish/`** (reinstalled 2026-10-13 with all clip-browser phases). Its first run migrates `settings.json` to v2, backing up v1 to `settings.v1.json`.
 
 Outstanding:
 - **System32 install** (only needed to appear in the Screen Saver Settings *dropdown*) — needs elevation: `scripts/install-scr.ps1 -SetAsDefault`.
