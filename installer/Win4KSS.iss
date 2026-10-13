@@ -84,11 +84,13 @@ Name: "systemscr"; Description: "Make {#MyAppName} available in Windows' Screen 
 ; wording, if that is wrong for how this actually gets shared.
 Name: "setdefault"; Description: "Set {#MyAppName} as my active screen saver now (10 minute idle timeout)"; GroupDescription: "Screen saver registration:"; Flags: unchecked
 ; Only offered on a genuinely fresh machine (Check: NotExistingInstall) -- when upgrading an
-; existing install, PrepareToInstall below already exports the current settings for safety,
+; existing install, PrepareToInstall below already backs up the current settings for safety,
 ; and overwriting a working setup with an imported file mid-upgrade is not what "upgrade"
 ; should mean. Checking this box prompts for a *.win4kss.json file via GetOpenFileName when
 ; leaving this wizard page (NextButtonClick below); the actual import runs once files are on
-; disk, in CurStepChanged(ssPostInstall), before install-scr.ps1 touches shortcuts.
+; disk, via the install-scr.ps1 [Run] entry's own BeforeInstall callback below, which Inno
+; guarantees fires after [Files]/[Icons] but before that entry (and so before install-scr.ps1
+; touches shortcuts).
 ; TODO(review): wording, and whether this belongs on the Tasks page at all vs. a dedicated
 ; wizard page -- this is the "simpler" of the two options the spec offered.
 Name: "importsettings"; Description: "Import settings from a file..."; GroupDescription: "Settings:"; Flags: unchecked; Check: NotExistingInstall
@@ -121,7 +123,7 @@ Name: "{userprograms}\{#MyAppName}\Uninstall {#MyAppName}"; Filename: "{uninstal
 Filename: "powershell.exe"; \
     Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\install-scr.ps1"" -SkipBuild -PublishDir ""{app}"" {code:GetInstallScrArgs}"; \
     StatusMsg: "Registering {#MyAppName} as a screen saver..."; \
-    Flags: runhidden waituntilterminated
+    Flags: runhidden waituntilterminated; BeforeInstall: ImportSettingsIfChosen
 Filename: "{app}\{#MyAppExeName}"; Parameters: "/c"; Description: "Open the {#MyAppName} clip browser now"; Flags: postinstall skipifsilent nowait unchecked
 
 [UninstallRun]
@@ -150,11 +152,9 @@ var
   // Set once in InitializeSetup and read everywhere else -- {app} is fixed (DisableDirPage=yes),
   // so this is decided before the wizard shows any pages and never changes during the run.
   ExistingInstallDetected: Boolean;
-  // Where PrepareToInstall writes the pre-upgrade safety-net export. Computed once in
-  // InitializeSetup so every reference (export call, log messages) agrees on the same path.
-  PreUpgradeExportPath: String;
   // '' until the user picks a file for the "importsettings" task via GetOpenFileName
-  // (NextButtonClick). CurStepChanged(ssPostInstall) imports it if non-empty.
+  // (NextButtonClick). ImportSettingsIfChosen -- a BeforeInstall callback on the install-scr.ps1
+  // [Run] entry below -- imports it if non-empty.
   ImportSettingsFile: String;
 
 function IsWebView2RuntimeInstalled(): Boolean;
@@ -217,11 +217,6 @@ begin
   Result := True;
 
   ExistingInstallDetected := DetectExistingInstall();
-  // TODO(review): the pre-upgrade export is written here, under the same profile directory
-  // settings.json/the cache already live in. %TEMP% was the other option the spec suggested;
-  // this one survives past the single Setup run (handy if the upgrade itself goes wrong), at
-  // the cost of sitting there permanently rather than being cleaned up automatically.
-  PreUpgradeExportPath := ExpandConstant('{localappdata}\Win4KScreensavers\pre-upgrade-settings.win4kss.json');
   ImportSettingsFile := '';
 
   // Not a blocker: the screen saver itself needs no WebView2 at all, only the clip browser
@@ -308,41 +303,73 @@ begin
   end;
 end;
 
-// Runs before any files are copied (per spec: "before copying new files"). Exports the
-// about-to-be-upgraded install's current settings as a safety net -- not a hard requirement,
-// so a missing/unreadable exe or a failed export never blocks the upgrade; Result stays ''.
+// Runs before any files are copied (per spec: "before copying new files"). Backs up the
+// about-to-be-upgraded install's settings.json as a safety net.
+//
+// TODO(review)-turned-fix: this used to call the OLD exe's --export-settings here. That breaks
+// upgrading from v1.0.0, the public release, which predates this feature entirely: its
+// Program.ParseArguments has no idea what --export-settings is, maps it to Verb.Unknown, and
+// Unknown pops a MODAL MessageBox ("Unrecognised argument: ...") that Exec sits there waiting
+// on -- every v1.0.0 user upgrading would hit a confusing blocking dialog mid-setup. Both
+// builds report AssemblyVersion 1.0.0.0, so there is no version number to gate on either.
+// A plain file copy needs no exe at all, so it can never hit this: it works unconditionally,
+// for every past version, forever. It is lossless for the fields that matter -- SettingsPortability
+// deliberately already omits KnownKeys/FailedClips from a real export, same as this raw copy
+// omits nothing beyond what export would have -- and a user can restore it by renaming it back
+// to settings.json by hand if an upgrade ever goes wrong. A human-readable *.win4kss.json
+// export of the same moment, made with the NEW exe (so it carries whatever SettingsCli fixes
+// shipped after the version being upgraded from), happens separately below in
+// CurStepChanged(ssPostInstall), once that new exe actually exists at {app}.
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
-  ExistingExe: String;
+  SettingsPath, BackupPath: String;
 begin
   Result := '';
   if not ExistingInstallDetected then
     Exit;
 
-  ExistingExe := ExpandConstant('{app}\{#MyAppExeName}');
-  if not FileExists(ExistingExe) then
+  SettingsPath := ExpandConstant('{localappdata}\Win4KScreensavers\settings.json');
+  if not FileExists(SettingsPath) then
   begin
-    Log('PrepareToInstall: settings profile exists but ' + ExistingExe + ' does not; skipping the pre-upgrade export.');
+    Log('PrepareToInstall: no settings.json to back up at ' + SettingsPath + '.');
     Exit;
   end;
 
-  RunSettingsCliAndWarn(ExistingExe,
-    '--export-settings "' + PreUpgradeExportPath + '"',
-    'Exporting your current Win4KSS settings before upgrading (saved to ' + PreUpgradeExportPath + ')');
+  BackupPath := ExpandConstant('{localappdata}\Win4KScreensavers\pre-upgrade-settings.json');
+  if CopyFile(SettingsPath, BackupPath, False) then
+    Log('PrepareToInstall: backed up ' + SettingsPath + ' to ' + BackupPath + '.')
+  else
+    Log('PrepareToInstall: could not back up ' + SettingsPath + ' to ' + BackupPath + '.');
 end;
 
-// Fires after [Files]/[Icons]/etc. are done but before the [Run] section below executes --
-// i.e. before install-scr.ps1 touches shortcuts/registration and before the clip browser can
-// be launched, which is exactly the "after files copied, before any shortcut/first-launch
-// step" window the spec asks for. --include-machine is deliberately never passed: machine-
-// specific paths (cache folder, local folders, ffmpeg path) from someone else's export are not
-// something a fresh install should silently adopt (see SettingsCli.cs's own doc comment).
-procedure CurStepChanged(CurStep: TSetupStep);
+// Runs immediately before the install-scr.ps1 [Run] entry below (its BeforeInstall), which
+// Inno guarantees happens after [Files]/[Icons] are on disk but before that entry itself runs
+// -- i.e. before install-scr.ps1 touches shortcuts/registration. Deliberately NOT done in
+// CurStepChanged(ssPostInstall): Inno's own docs don't specify whether ssPostInstall fires
+// before or after a non-postinstall [Run] entry, and this needs to be certain, not probably-
+// fine. --include-machine is deliberately never passed: machine-specific paths (cache folder,
+// local folders, ffmpeg path) from someone else's export are not something a fresh install
+// should silently adopt (see SettingsCli.cs's own doc comment).
+procedure ImportSettingsIfChosen();
 begin
-  if (CurStep = ssPostInstall) and (ImportSettingsFile <> '') then
+  if ImportSettingsFile <> '' then
     RunSettingsCliAndWarn(ExpandConstant('{app}\{#MyAppExeName}'),
       '--import-settings "' + ImportSettingsFile + '"',
       'Importing settings from ' + ImportSettingsFile);
+end;
+
+// Once every file is on disk (ssPostInstall), makes a human-readable *.win4kss.json export of
+// the settings an upgrade just carried over -- using the exe that was just installed, which is
+// why this waits for ssPostInstall rather than running in PrepareToInstall alongside the raw
+// settings.json backup above. That plain-copy backup is the real safety net and does not
+// depend on this succeeding; this is a nicer-to-read bonus on top of it. Not attempted on a
+// fresh install (ExistingInstallDetected false): there is nothing yet to export.
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if (CurStep = ssPostInstall) and ExistingInstallDetected then
+    RunSettingsCliAndWarn(ExpandConstant('{app}\{#MyAppExeName}'),
+      '--export-settings "' + ExpandConstant('{localappdata}\Win4KScreensavers\pre-upgrade-settings.win4kss.json') + '"',
+      'Making a readable export of your settings before the upgrade');
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
