@@ -105,6 +105,31 @@ public class Mp4BoxTests
     }
 
     [Fact]
+    public void Tail_index_is_decided_from_a_small_prefix()
+    {
+        const long head = 20L * 1024 * 1024;
+
+        // 64 KB in, the mdat already claims 300 MB: the index cannot be in the first 20 MB.
+        var tail = Concat(Box("ftyp", 16), Header("mdat", 300_000_000), new byte[64 * 1024]);
+        Assert.True(Mp4Boxes.IndexIsBeyond(tail, head));
+
+        // Index up front: keep downloading.
+        var front = Concat(Box("ftyp", 16), Box("moov", 4000), Header("mdat", 300_000_000), new byte[1024]);
+        Assert.False(Mp4Boxes.IndexIsBeyond(front, head));
+
+        // A huge moov that ends past the head is as useless as one at the tail.
+        var hugeMoov = Concat(Box("ftyp", 16), Header("moov", 30_000_000), new byte[1024]);
+        Assert.True(Mp4Boxes.IndexIsBeyond(hugeMoov, head));
+
+        // A small mdat whose successor has not arrived yet: cannot tell, keep going.
+        var unknown = Concat(Box("ftyp", 16), Header("mdat", 100_000), new byte[1024]);
+        Assert.False(Mp4Boxes.IndexIsBeyond(unknown, head));
+
+        // Not an MP4 at all: never abandon on that basis.
+        Assert.False(Mp4Boxes.IndexIsBeyond(Encoding.ASCII.GetBytes("<html></html>"), head));
+    }
+
+    [Fact]
     public void Malformed_sizes_stop_the_walk_without_throwing()
     {
         // Size smaller than its own header.

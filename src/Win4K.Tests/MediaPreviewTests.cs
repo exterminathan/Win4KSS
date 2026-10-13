@@ -103,6 +103,20 @@ public class PreviewCommandTests
     }
 
     [Fact]
+    public void Image_width_is_read_from_the_header()
+    {
+        Assert.Equal(160, MediaPreviewService.ImageWidth(MediaPreviewServiceTests.JpegOfWidth(160)));
+        Assert.Equal(1920, MediaPreviewService.ImageWidth(MediaPreviewServiceTests.JpegOfWidth(1920)));
+
+        var png = new byte[24];
+        new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0x0D, (byte)'I', (byte)'H', (byte)'D', (byte)'R', 0, 0, 0x03, 0x84 }.CopyTo(png, 0);
+        Assert.Equal(900, MediaPreviewService.ImageWidth(png));
+
+        Assert.Null(MediaPreviewService.ImageWidth([0xFF, 0xD8, 0xFF])); // truncated
+        Assert.Null(MediaPreviewService.ImageWidth("GIF89a"u8.ToArray()));
+    }
+
+    [Fact]
     public void Image_sniffing()
     {
         Assert.Equal(".jpg", MediaPreviewService.SniffImage([0xFF, 0xD8, 0xFF, 0xE0]));
@@ -268,15 +282,44 @@ public class MediaPreviewServiceTests : IDisposable
             var slice = route.Body[from..(to + 1)];
             var response = new HttpResponseMessage(range is null ? HttpStatusCode.OK : HttpStatusCode.PartialContent)
             {
-                Content = new ByteArrayContent(slice) { Headers = { ContentType = new MediaTypeHeaderValue("video/mp4") } },
+                Content = new StreamContent(new CountingStream(slice, owner)) { Headers = { ContentType = new MediaTypeHeaderValue("video/mp4") } },
             };
+            response.Content.Headers.ContentLength = slice.Length;
             if (range is not null)
                 response.Content.Headers.ContentRange = new ContentRangeHeaderValue(from, to, route.Body.Length);
             return response;
         }
     }
 
-    private MediaPreviewService CreateWithRanges(long headBytes, bool ffmpeg = true)
+    private long _served;
+
+    /// <summary>Counts the video bytes the service actually read, to prove a download was abandoned.</summary>
+    private sealed class CountingStream(byte[] body, MediaPreviewServiceTests owner) : MemoryStream(body)
+    {
+        // MemoryStream routes every other Read overload of a subclass through this one.
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            var read = base.Read(buffer, offset, count);
+            Interlocked.Add(ref owner._served, read);
+            return read;
+        }
+
+        public override int Read(Span<byte> buffer)
+        {
+            var array = new byte[buffer.Length];
+            var read = Read(array, 0, array.Length);
+            array.AsSpan(0, read).CopyTo(buffer);
+            return read;
+        }
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default) =>
+            ValueTask.FromResult(Read(buffer.Span));
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct) =>
+            Task.FromResult(Read(buffer, offset, count));
+    }
+
+    private MediaPreviewService CreateWithRanges(long headBytes, bool ffmpeg = true, bool heads = true)
     {
         var service = new MediaPreviewService(new AppSettings(), cache: null, new MediaPreviewOptions
         {
@@ -289,6 +332,7 @@ public class MediaPreviewServiceTests : IDisposable
             CaFile = () => "ca.pem",
             InputFileFor = _ => null,
             DefaultHeadBytes = headBytes,
+            UseHeadSegments = heads,
             MinHeadBytes = 1024,
             SaveDebounce = TimeSpan.FromMilliseconds(10),
         });
@@ -448,6 +492,103 @@ public class MediaPreviewServiceTests : IDisposable
         Assert.Equal(url, FakeFfmpeg.InputOf(args));
         Assert.Equal("ca.pem", args[FakeFfmpeg.IndexOf(args, "-ca_file") + 1]);
         Assert.Equal("1", args[FakeFfmpeg.IndexOf(args, "-tls_verify") + 1]);
+    }
+
+    [Fact]
+    public async Task Tail_index_is_spotted_without_downloading_the_whole_head()
+    {
+        const string url = "https://cdn.example/big-tail.mov";
+        ServeVideo(url, Mp4(moovFirst: false, length: 8 * 1024 * 1024));
+        var service = CreateWithRanges(headBytes: 4 * 1024 * 1024);
+        service.SetCatalog([Clip("apple:B", url: url)]);
+
+        var hover = await service.GenerateAsync("apple:B", PreviewKind.Hover);
+
+        Assert.Equal("remote", hover.Source);
+        Assert.InRange(Interlocked.Read(ref _served), 64 * 1024, 512 * 1024);
+    }
+
+    [Fact]
+    public async Task A_small_thumbnail_is_replaced_by_a_frame_once_the_video_is_at_hand()
+    {
+        const string url = "https://cdn.example/archive.mp4";
+        ServeVideo(url, Mp4(moovFirst: true));
+        ServeBytes("https://img.example/small.jpg", JpegOfWidth(160));
+        var service = CreateWithRanges(headBytes: 16 * 1024);
+        service.SetCatalog([Clip("ia:x/archive.mp4", thumbnail: "https://img.example/small.jpg", url: url)]);
+        var updates = new List<PreviewState>();
+        service.PreviewUpdated += (_, e) => { lock (updates) updates.Add(e.State); };
+
+        // Background fill does stills first: the 160 px thumbnail is all there is for now.
+        var still = await service.GenerateAsync("ia:x/archive.mp4", PreviewKind.Still);
+        Assert.Equal("thumbnail", still.Source);
+        Assert.Empty(_videoRoutes[url].Ranges); // no video fetched for a still
+
+        // The hover clip downloads the head anyway, and the still is upgraded from it.
+        var hover = await service.GenerateAsync("ia:x/archive.mp4", PreviewKind.Hover);
+        Assert.Equal("head", hover.Source);
+        var upgraded = service.Get("ia:x/archive.mp4", PreviewKind.Still);
+        Assert.Equal("head", upgraded.Source);
+        Assert.Equal(still.FileName, upgraded.FileName);
+        Assert.NotEqual(still.Url, upgraded.Url);
+        Assert.Contains(updates, u => u.Kind == PreviewKind.Still && u.Source == "head");
+        Assert.Single(_videoRoutes[url].Ranges);
+    }
+
+    [Fact]
+    public async Task A_large_thumbnail_is_kept()
+    {
+        var cached = Path.Combine(_root, "cached.mov");
+        File.WriteAllBytes(cached, [1]);
+        ServeBytes("https://img.example/big.jpg", JpegOfWidth(900));
+        var service = Create(inputFile: _ => cached);
+        service.SetCatalog([Clip("tv:a", thumbnail: "https://img.example/big.jpg")]);
+
+        Assert.Equal("thumbnail", (await service.GenerateAsync("tv:a", PreviewKind.Still)).Source);
+        await service.GenerateAsync("tv:a", PreviewKind.Hover);
+        Assert.Equal("thumbnail", service.Get("tv:a", PreviewKind.Still).Source);
+    }
+
+    [Fact]
+    public async Task A_small_thumbnail_with_the_clip_cached_goes_straight_to_a_frame()
+    {
+        var cached = Path.Combine(_root, "cached.mov");
+        File.WriteAllBytes(cached, [1]);
+        ServeBytes("https://img.example/small.jpg", JpegOfWidth(160));
+        var service = Create(inputFile: _ => cached);
+        service.SetCatalog([Clip("ia:y", thumbnail: "https://img.example/small.jpg")]);
+
+        var still = await service.GenerateAsync("ia:y", PreviewKind.Still);
+
+        Assert.Equal("local", still.Source);
+        Assert.Equal(cached, FakeFfmpeg.InputOf(_ffmpeg.Calls.Last()));
+    }
+
+    /// <summary>A JPEG header (SOI, APP0, SOF0) declaring <paramref name="width"/>×90 pixels.</summary>
+    internal static byte[] JpegOfWidth(int width)
+    {
+        var bytes = new List<byte> { 0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10 };
+        bytes.AddRange("JFIF "u8.ToArray());
+        bytes.AddRange(new byte[9]);
+        bytes.AddRange([0xFF, 0xC0, 0x00, 0x11, 0x08, 0x00, 90, (byte)(width >> 8), (byte)width, 0x03]);
+        bytes.AddRange(new byte[9]);
+        bytes.AddRange([0xFF, 0xD9]);
+        return bytes.ToArray();
+    }
+
+    [Fact]
+    public async Task Head_segments_can_be_switched_off()
+    {
+        const string url = "https://cdn.example/direct.mp4";
+        var ranges = ServeVideo(url, Mp4(moovFirst: true));
+        var service = CreateWithRanges(headBytes: 16 * 1024, heads: false);
+        service.SetCatalog([Clip("ia:d", url: url)]);
+
+        var hover = await service.GenerateAsync("ia:d", PreviewKind.Hover);
+
+        Assert.Equal("remote", hover.Source);
+        Assert.Empty(ranges);
+        Assert.Equal(url, FakeFfmpeg.InputOf(_ffmpeg.Calls.Single()));
     }
 
     [Fact]

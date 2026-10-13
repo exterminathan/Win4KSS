@@ -8,7 +8,7 @@ Built for one user, on one machine, for personal use.
 
 ## Status
 
-**Built, installed (user scope), and working.** All eight phases complete; clip-browser Phase B (unified clip model + in-app catalogue refresh) and Phase C (cache pins, download queue, multi-process safety) landed 2026-10-13; 334 tests green. `/s`, `/c`, `/p`, `/w` and `/now` all verified against the published build; 4K HEVC streams and plays with `d3d11va` hardware decode, including the settings-dialog live preview.
+**Built, installed (user scope), and working.** All eight phases complete; clip-browser Phase B (unified clip model + in-app catalogue refresh) Phase C (cache pins, download queue, multi-process safety) and Phase D (`MediaPreviewService`: grid stills + hover clips) landed 2026-10-13; 389 tests green. `/s`, `/c`, `/p`, `/w` and `/now` all verified against the published build; 4K HEVC streams and plays with `d3d11va` hardware decode, including the settings-dialog live preview.
 
 Installed at `%LOCALAPPDATA%\Programs\Win4KSS\` (renamed from `Win4KAerial` on 2026-10-12 so Screen Saver Settings shows "Win4KSS"; `install-scr.ps1` removes the old files and repoints `SCRNSAVE.EXE`) with Desktop + Start Menu shortcuts bound to `Ctrl+Alt+S`. The full walk-away chain was observed working end to end: shortcut → `StartNow` → Windows launched our saver → 1500 ms manual grace → playing from cache.
 
@@ -29,6 +29,7 @@ Win4KScreensavers/
 │   │   ├── Apple/           manifest client + models (tar-backed, cached, fallback)
 │   │   ├── Catalogs/        ClipInfo, ClipKey, TagBuilder, ClipMerger, ClipLibrary, harvesters, CatalogRefresher/Store
 │   │   ├── Caching/         VideoCache (content-addressed, staged, resumable, LRU, pin-aware), DownloadQueue, PinManager, CrossProcess
+│   │   ├── Media/           MediaPreviewService (browser stills + hover clips), Mp4Boxes, PreviewCommands, ProcessRunner
 │   │   ├── Playback/        MpvInterop, MpvLoader, MpvPlayer, PlaylistEngine
 │   │   ├── Sources/         IVideoSource, Apple, LocalFolder, RegistryCatalog, ClipResolver
 │   │   ├── Settings/        AppSettings (JSON)
@@ -36,7 +37,7 @@ Win4KScreensavers/
 │   ├── Win4K.ScreenSaver/   WinForms exe → Win4KSS.scr / Win4KSS.exe
 │   │   ├── Program.cs       CLI verbs; SaverForm.cs; SettingsForm.cs
 │   │   └── InputDismissWatcher.cs, LaunchContext.cs, PreviewLifetime.cs, ShortcutManager.cs, NativeMethods.cs
-│   └── Win4K.Tests/         xunit (334); Fixtures/ = trimmed upstream samples for the harvesters
+│   └── Win4K.Tests/         xunit (389); Fixtures/ = trimmed upstream samples for the harvesters
 ├── assets/                  fallback-entries.json, apple-root-ca.cer, registry/
 ├── native/mpv/              libmpv-2.dll — gitignored, fetched by script
 ├── scripts/                 fetch-libmpv.ps1, install-scr.ps1
@@ -45,7 +46,7 @@ Win4KScreensavers/
 └── PLAN.md                  design + findings
 ```
 
-Runtime state lives in `%LOCALAPPDATA%\Win4KScreensavers\`: `settings.json`, `manifest.json`, `catalogs/`, `ca-bundle.pem`, `win4k.log`, `mpv.log`, `cache/videos`, `cache/partial` (kept across sessions for Range resume; 7-day orphans removed), `cache/cache-index.json`, `cache/queue.json` (pending pins).
+Runtime state lives in `%LOCALAPPDATA%\Win4KScreensavers\`: `settings.json`, `manifest.json`, `catalogs/`, `ca-bundle.pem`, `win4k.log`, `mpv.log`, `cache/videos`, `cache/partial` (kept across sessions for Range resume; 7-day orphans removed), `cache/cache-index.json`, `cache/queue.json` (pending pins), `previews/` (`<sha1(key)[:16]>.jpg`/`.mp4` + `index.json`; 1 GB LRU, separate from the cache budget; browser only).
 
 ## Conventions
 
@@ -77,6 +78,7 @@ Runtime state lives in `%LOCALAPPDATA%\Win4KScreensavers\`: `settings.json`, `ma
 - **Input dismissal cannot be tested from an automated session** — a non-interactive desktop refuses `SetCursorPos` and `GetCursorPos` reports `0,0`, so the watcher correctly sees no movement. The decision logic is unit-tested via `InputDismissWatcher.HasMovedEnough`; the polling needs a human with a real mouse.
 - Only **4 of Apple's 114** clips carry a day/night label, so time-of-day ordering barely moves anything. The 1080p manifest marked all of them; the 4K one dropped the field.
 - 4K clips are ~346 MB each, ~40 GB for all 114. Range requests are supported, so streaming and resumable downloads both work.
+- **Previews (`Media/MediaPreviewService`) shell out to ffmpeg, which here is a GnuTLS build whose `tls_verify` defaults to 0, so it checks nothing.** Always pass `-tls_verify 1 -ca_file <ca-bundle.pem>` (`PreviewCommands` does; verified to reject a self-signed cert). Apple and Amazon `.mov` files keep `moov` at the tail, so a Range-fetched head is useless for them; `Mp4Boxes.IndexIsBeyond` spots this after 64 KB and ffmpeg reads the URL instead (~4 s per hover clip). Archive.org serves ~1.3 MB/s: a hover clip via the head route takes ~22 s and 27 MB; ffmpeg direct takes ~7.6 s (`MediaPreviewOptions.UseHeadSegments`). archive.org `.thumbs` are 160 px, so stills are upgraded to a 480 px frame whenever a hover clip has the video at hand. Hover clips must be `-pix_fmt yuv420p`: Apple's sources are 10-bit, and High 10 H.264 won't play in Chromium.
 - libmpv is **114 MB**, making the published `.scr` ~115 MB.
 - **Local toolchain, verified:** .NET 10.0.302 SDK + WindowsDesktop 10.0.10 · VS2022 · ffmpeg/ffprobe at `C:\ffmpeg` · yt-dlp 2026.07.04 · RTX 2080 Super (hardware HEVC Main10 decode) · HEVC Video Extensions installed.
 

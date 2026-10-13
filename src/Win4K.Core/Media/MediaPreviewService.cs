@@ -27,6 +27,15 @@ public sealed class MediaPreviewOptions
     /// <summary>Whole-body limit for one head-segment download.</summary>
     public TimeSpan HeadDownloadTimeout { get; init; } = TimeSpan.FromSeconds(120);
 
+    /// <summary>
+    /// Read uncached clips through a Range-fetched head segment (true, the default) or hand
+    /// ffmpeg the HTTPS URL directly. Measured on archive.org (~1.3 MB/s): the head route took
+    /// 22 s and 27 MB for one hover clip; ffmpeg's own input seek took 7.6 s and fetched only
+    /// what it decoded. Both verify TLS against our trust (HttpClient/AppleTrust vs. the CA bundle
+    /// with tls_verify=1). Tail-indexed files always go direct.
+    /// </summary>
+    public bool UseHeadSegments { get; init; } = true;
+
     /// <summary>Head segment fetched when the clip's bitrate is unknown.</summary>
     public long DefaultHeadBytes { get; init; } = 20L * 1024 * 1024;
 
@@ -94,6 +103,9 @@ public sealed class MediaPreviewService : IDisposable
     public const string VirtualHost = "previews.win4k";
 
     internal const string NoFfmpegSource = "no-ffmpeg";
+
+    /// <summary>A thumbnail narrower than this is replaced by a video frame whenever one is cheap to take.</summary>
+    internal const int SharpWidth = 360;
 
     private readonly MediaPreviewOptions _options;
     private readonly HttpClient _http;
@@ -556,40 +568,24 @@ public sealed class MediaPreviewService : IDisposable
             if (job is null)
                 return;
 
-            var result = await GenerateItemAsync(job, item.Kind, cts.Token).ConfigureAwait(false);
+            var result = await GuardedAsync(job, item.Kind, ct => item.Kind == PreviewKind.Still
+                                                ? MakeStillAsync(job, ct)
+                                                : MakeHoverAsync(job, ct), cts.Token).ConfigureAwait(false);
             if (result is not null)
                 Record(item, result);
 
-            // A still that had to download a head segment has already paid for the input a
-            // hover clip needs: make it now rather than fetching the same 20 MB again later.
-            if (item.Kind == PreviewKind.Still && job.DownloadedHead && !cts.IsCancellationRequested)
-            {
-                var hover = new WorkItem(item.Key, PreviewKind.Hover);
-                CancellationTokenSource? hoverCts = null;
-                lock (_gate)
-                {
-                    if (!_running.ContainsKey(hover) && NeedsWorkLocked(hover))
-                    {
-                        RemoveDemandLocked(hover);
-                        hoverCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token);
-                        _running[hover] = hoverCts;
-                    }
-                }
+            if (cts.IsCancellationRequested || !job.HasLocalInput)
+                return;
 
-                if (hoverCts is not null)
-                {
-                    try
-                    {
-                        var hoverResult = await GenerateItemAsync(job, PreviewKind.Hover, hoverCts.Token).ConfigureAwait(false);
-                        if (hoverResult is not null)
-                            Record(hover, hoverResult);
-                    }
-                    finally
-                    {
-                        Release(hover, hoverCts);
-                    }
-                }
-            }
+            // The input is on disk now. A still that had to download a head segment has already
+            // paid for what the hover clip needs: make it now rather than fetch the same bytes later.
+            if (item.Kind == PreviewKind.Still && job.DownloadedHead)
+                await FollowUpAsync(job, new WorkItem(item.Key, PreviewKind.Hover), upgrade: false, cts.Token).ConfigureAwait(false);
+
+            // And a hover clip made from a local file or head can replace a postage-stamp
+            // thumbnail (archive.org's .thumbs are 160 px) with a sharp 480 px frame for ~1 s.
+            if (item.Kind == PreviewKind.Hover && result?.Status == PreviewStatus.Ready)
+                await FollowUpAsync(job, new WorkItem(item.Key, PreviewKind.Still), upgrade: true, cts.Token).ConfigureAwait(false);
         }
         finally
         {
@@ -598,14 +594,51 @@ public sealed class MediaPreviewService : IDisposable
         }
     }
 
+    /// <summary>
+    /// Makes a second preview of the same clip inside a job that already has its input. With
+    /// <paramref name="upgrade"/>, replaces a Ready but small thumbnail still, and records only a success.
+    /// </summary>
+    private async Task FollowUpAsync(Job job, WorkItem item, bool upgrade, CancellationToken parent)
+    {
+        CancellationTokenSource? cts = null;
+        lock (_gate)
+        {
+            var wanted = upgrade ? IsSmallStillLocked(item.Key) : NeedsWorkLocked(item);
+            if (wanted && !_running.ContainsKey(item))
+            {
+                RemoveDemandLocked(item);
+                cts = CancellationTokenSource.CreateLinkedTokenSource(parent);
+                _running[item] = cts;
+            }
+        }
+        if (cts is null)
+            return;
+
+        try
+        {
+            var result = await GuardedAsync(job, item.Kind, ct => item.Kind == PreviewKind.Still
+                                                ? StillFromVideoAsync(job, ct)
+                                                : MakeHoverAsync(job, ct), cts.Token).ConfigureAwait(false);
+            if (result is not null && (!upgrade || result.Status == PreviewStatus.Ready))
+                Record(item, result);
+        }
+        finally
+        {
+            Release(item, cts);
+        }
+    }
+
+    private bool IsSmallStillLocked(string key) =>
+        _ffmpeg is not null &&
+        _index.Entries.GetValueOrDefault(key)?.Still is { Status: PreviewStatus.Ready, Source: "thumbnail", Width: { } width } &&
+        width < SharpWidth;
+
     /// <returns>The outcome, or null when cancelled (nothing to record).</returns>
-    private async Task<PreviewItem?> GenerateItemAsync(Job job, PreviewKind kind, CancellationToken ct)
+    private static async Task<PreviewItem?> GuardedAsync(Job job, PreviewKind kind, Func<CancellationToken, Task<PreviewItem>> make, CancellationToken ct)
     {
         try
         {
-            return kind == PreviewKind.Still
-                ? await MakeStillAsync(job, ct).ConfigureAwait(false)
-                : await MakeHoverAsync(job, ct).ConfigureAwait(false);
+            return await make(ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -614,7 +647,12 @@ public sealed class MediaPreviewService : IDisposable
         catch (Exception ex)
         {
             Log.Warn($"Previews: {kind} for {job.Clip.Key} failed: {ex.Message}");
-            return Item(PreviewStatus.Failed, null, null, ex.Message);
+            return new PreviewItem
+            {
+                Status = PreviewStatus.Failed,
+                Error = Truncate(ex.Message, 300),
+                UpdatedUtc = job.Owner.Now,
+            };
         }
     }
 
@@ -636,9 +674,16 @@ public sealed class MediaPreviewService : IDisposable
         {
             try
             {
-                var fromThumbnail = await StillFromThumbnailAsync(job, job.Clip.ThumbnailUrl, ct).ConfigureAwait(false);
-                if (fromThumbnail is not null)
-                    return fromThumbnail;
+                var thumbnail = await StillFromThumbnailAsync(job, job.Clip.ThumbnailUrl, ct).ConfigureAwait(false);
+
+                // A tiny thumbnail when the clip is already on disk: a real frame costs a second.
+                if (thumbnail.Width < SharpWidth && _ffmpeg is not null && job.LocalInputPath() is not null)
+                {
+                    var frame = await StillFromVideoAsync(job, ct).ConfigureAwait(false);
+                    if (frame.Status == PreviewStatus.Ready)
+                        return frame;
+                }
+                return thumbnail;
             }
             catch (Exception ex) when (!ct.IsCancellationRequested)
             {
@@ -655,9 +700,18 @@ public sealed class MediaPreviewService : IDisposable
                 : Item(PreviewStatus.Failed, null, NoFfmpegSource, error);
         }
 
+        var still = await StillFromVideoAsync(job, ct).ConfigureAwait(false);
+        if (still.Status != PreviewStatus.Ready && error is not null)
+            still.Error = Truncate(error + "; " + still.Error, 300);
+        return still;
+    }
+
+    /// <summary>A keyframe from the clip's video: cached file, else head segment, else over HTTPS.</summary>
+    private async Task<PreviewItem> StillFromVideoAsync(Job job, CancellationToken ct)
+    {
         var input = await job.VideoInputAsync(ct).ConfigureAwait(false);
         if (input is null)
-            return error is null ? Item(PreviewStatus.Placeholder, null, null, "no video to take a frame from") : Item(PreviewStatus.Failed, null, null, error);
+            return Item(PreviewStatus.Placeholder, null, null, "no video to take a frame from");
 
         var seek = PreviewCommands.SeekSeconds(job.Clip.DurationSeconds);
         return await RunAttemptsAsync(job, input, seek, ".jpg",
@@ -701,7 +755,7 @@ public sealed class MediaPreviewService : IDisposable
             var temp = job.TempFile(extension);
             var result = await _runner.RunAsync(_ffmpeg!, build(src, temp, ss), _options.ProcessTimeout, ct).ConfigureAwait(false);
             if (result.Succeeded && NonEmpty(temp))
-                return Commit(job, temp, extension, source);
+                return Commit(job, temp, extension, source, PreviewCommands.Width);
 
             error = result.TimedOut
                 ? $"ffmpeg timed out after {_options.ProcessTimeout.TotalSeconds:0} s"
@@ -713,10 +767,11 @@ public sealed class MediaPreviewService : IDisposable
         return Item(PreviewStatus.Failed, null, null, error);
     }
 
-    private async Task<PreviewItem?> StillFromThumbnailAsync(Job job, string url, CancellationToken ct)
+    private async Task<PreviewItem> StillFromThumbnailAsync(Job job, string url, CancellationToken ct)
     {
         var bytes = await FetchAsync(url, _options.MaxThumbnailBytes, ct).ConfigureAwait(false);
         var ext = SniffImage(bytes) ?? throw new InvalidDataException("not a JPEG, PNG or WebP image");
+        var width = ImageWidth(bytes);
 
         if (_ffmpeg is not null)
         {
@@ -726,7 +781,7 @@ public sealed class MediaPreviewService : IDisposable
             var result = await _runner.RunAsync(_ffmpeg, PreviewCommands.StillFromImage(source, temp), _options.ProcessTimeout, ct)
                                       .ConfigureAwait(false);
             if (result.Succeeded && NonEmpty(temp))
-                return Commit(job, temp, ".jpg", "thumbnail");
+                return Commit(job, temp, ".jpg", "thumbnail", width is { } w ? Math.Min(w, PreviewCommands.Width) : null);
             TryDelete(temp);
             Log.Warn($"Previews: re-encoding the thumbnail for {job.Clip.Key} failed ({LastLine(result.StdErr)}); storing it as-is");
         }
@@ -735,16 +790,18 @@ public sealed class MediaPreviewService : IDisposable
         // the browser scales them, at some cost in bytes.
         var stored = job.TempFile(ext);
         await File.WriteAllBytesAsync(stored, bytes, ct).ConfigureAwait(false);
-        return Commit(job, stored, ext, "thumbnail");
+        return Commit(job, stored, ext, "thumbnail", width);
     }
 
     /// <summary>Moves a finished temp file into place as &lt;hash&gt;&lt;ext&gt; and describes it.</summary>
-    private PreviewItem Commit(Job job, string temp, string extension, string source)
+    private PreviewItem Commit(Job job, string temp, string extension, string source, int? width)
     {
         var name = job.Hash + extension;
         var final = Path.Combine(Directory, name);
         MoveWithRetry(temp, final);
-        return Item(PreviewStatus.Ready, name, source, null, new FileInfo(final).Length);
+        var item = Item(PreviewStatus.Ready, name, source, null, new FileInfo(final).Length);
+        item.Width = width;
+        return item;
     }
 
     private PreviewItem Item(PreviewStatus status, string? file, string? source, string? error, long bytes = 0) => new()
@@ -770,6 +827,9 @@ public sealed class MediaPreviewService : IDisposable
             var old = record.Get(item.Kind);
             if (old?.File is { } oldFile && !string.Equals(oldFile, result.File, StringComparison.OrdinalIgnoreCase))
                 stale = oldFile;
+            // The version (cache-buster) must move on every rewrite, even within one clock tick.
+            if (old is not null && result.UpdatedUtc <= old.UpdatedUtc)
+                result.UpdatedUtc = old.UpdatedUtc.AddTicks(1);
             record.Set(item.Kind, result);
             record.LastAccessUtc = Now;
             state = StateLocked(item);
@@ -845,9 +905,16 @@ public sealed class MediaPreviewService : IDisposable
         private VideoInput? _input;
         private bool _resolved;
 
+        public MediaPreviewService Owner => owner;
         public ClipInfo Clip { get; } = clip;
         public string Hash { get; } = hash;
         public bool DownloadedHead => _input?.Source == "head";
+
+        /// <summary>The input has been resolved to a file on disk (cached clip or downloaded head).</summary>
+        public bool HasLocalInput => _input?.Source is "local" or "head";
+
+        /// <summary>The cached or folder file for this clip, without touching the network.</summary>
+        public string? LocalInputPath() => _input?.Source == "local" ? _input.Path : owner.LocalFileFor(Clip);
 
         public string TempFile(string extension)
         {
@@ -873,18 +940,23 @@ public sealed class MediaPreviewService : IDisposable
         }
     }
 
-    private async Task<VideoInput?> ResolveInputAsync(Job job, CancellationToken ct)
+    private string? LocalFileFor(ClipInfo clip)
     {
-        var clip = job.Clip;
-        string? local = null;
         try
         {
-            local = _inputFileFor(clip);
+            return _inputFileFor(clip);
         }
         catch (Exception ex)
         {
             Log.Warn($"Previews: cache lookup for {clip.Key} failed: {ex.Message}");
+            return null;
         }
+    }
+
+    private async Task<VideoInput?> ResolveInputAsync(Job job, CancellationToken ct)
+    {
+        var clip = job.Clip;
+        var local = LocalFileFor(clip);
         if (local is not null)
             return new VideoInput("local", local, null);
 
@@ -893,6 +965,8 @@ public sealed class MediaPreviewService : IDisposable
         if (clip.Urls.UrlFor(VideoQuality.Hd1080Sdr) is not { } raw || !Uri.TryCreate(raw, UriKind.Absolute, out var uri))
             return null;
         var url = uri.AbsoluteUri;
+        if (!_options.UseHeadSegments)
+            return new VideoInput("remote", url, null);
 
         var head = await FetchHeadAsync(job, url, HeadBytesFor(clip), ct).ConfigureAwait(false);
         if (head is null)
@@ -937,10 +1011,15 @@ public sealed class MediaPreviewService : IDisposable
             : response.Content.Headers.ContentLength;
 
         timeout.CancelAfter(_options.HeadDownloadTimeout);
-        var buffer = await ReadUpToAsync(response, maxBytes, timeout.Token).ConfigureAwait(false);
-        var complete = buffer.Length < maxBytes || (total is { } t && buffer.Length >= t);
 
-        if (!complete && Mp4Boxes.LocateMoov(buffer) == MoovLocation.BeyondHead)
+        // Tail-indexed files (Apple's and Amazon's .mov) are recognised from the first 64 KB
+        // and abandoned, rather than downloading 20 MB that ffmpeg cannot use.
+        var headIsWhole = total is { } whole && whole <= maxBytes;
+        var buffer = await ReadUpToAsync(response, maxBytes, timeout.Token,
+            giveUp: headIsWhole ? null : prefix => Mp4Boxes.IndexIsBeyond(prefix.Span, maxBytes)).ConfigureAwait(false);
+        var complete = buffer is not null && (buffer.Length < maxBytes || (total is { } t && buffer.Length >= t));
+
+        if (buffer is null || (!complete && Mp4Boxes.LocateMoov(buffer) == MoovLocation.BeyondHead))
         {
             Log.Info($"Previews: {job.Clip.Key} keeps its index at the tail; ffmpeg will read it over HTTPS");
             return null;
@@ -960,7 +1039,7 @@ public sealed class MediaPreviewService : IDisposable
         EnsureUsable(response, url);
         if (response.Content.Headers.ContentLength > maxBytes)
             throw new InvalidDataException($"{response.Content.Headers.ContentLength} bytes is too large for a thumbnail");
-        return await ReadUpToAsync(response, maxBytes, timeout.Token).ConfigureAwait(false);
+        return (await ReadUpToAsync(response, maxBytes, timeout.Token).ConfigureAwait(false))!;
     }
 
     private static void EnsureUsable(HttpResponseMessage response, string url)
@@ -971,8 +1050,11 @@ public sealed class MediaPreviewService : IDisposable
             throw new InvalidDataException($"{url} returned an HTML page");
     }
 
-    private static async Task<byte[]> ReadUpToAsync(HttpResponseMessage response, long maxBytes, CancellationToken ct)
+    /// <param name="giveUp">Asked once, when 64 KB have arrived; true abandons the download (returns null).</param>
+    private static async Task<byte[]?> ReadUpToAsync(
+        HttpResponseMessage response, long maxBytes, CancellationToken ct, Func<ReadOnlyMemory<byte>, bool>? giveUp = null)
     {
+        const int DecideAfter = 64 * 1024;
         await using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
         using var memory = new MemoryStream();
         var buffer = new byte[81920];
@@ -983,8 +1065,51 @@ public sealed class MediaPreviewService : IDisposable
             if (read == 0)
                 break;
             memory.Write(buffer, 0, read);
+
+            if (giveUp is not null && memory.Length >= DecideAfter)
+            {
+                if (giveUp(memory.GetBuffer().AsMemory(0, (int)memory.Length)))
+                    return null;
+                giveUp = null;
+            }
         }
         return memory.ToArray();
+    }
+
+    /// <summary>Pixel width of a JPEG or PNG from its header, or null for anything else.</summary>
+    internal static int? ImageWidth(ReadOnlySpan<byte> bytes)
+    {
+        var type = SniffImage(bytes);
+        if (type == ".png")
+            return bytes.Length >= 24 ? (int)System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(bytes[16..]) : null;
+        if (type != ".jpg")
+            return null;
+
+        var i = 2;
+        while (i + 9 < bytes.Length)
+        {
+            if (bytes[i] != 0xFF)
+            {
+                i++;
+                continue;
+            }
+            var marker = bytes[i + 1];
+            if (marker == 0xFF)
+            {
+                i++;
+                continue;
+            }
+            if (marker is 0x01 or (>= 0xD0 and <= 0xD8))
+            {
+                i += 2;
+                continue;
+            }
+            // SOF0-SOF15 carry the frame size; C4 (DHT), C8 (JPG) and CC (DAC) share the range but do not.
+            if (marker is >= 0xC0 and <= 0xCF and not 0xC4 and not 0xC8 and not 0xCC)
+                return System.Buffers.Binary.BinaryPrimitives.ReadUInt16BigEndian(bytes[(i + 7)..]);
+            i += 2 + System.Buffers.Binary.BinaryPrimitives.ReadUInt16BigEndian(bytes[(i + 2)..]);
+        }
+        return null;
     }
 
     /// <summary>Folder clips read their own file; others any rendition already in the video cache, SDR first.</summary>
@@ -1093,7 +1218,7 @@ public sealed class MediaPreviewService : IDisposable
 
     // ---- helpers -------------------------------------------------------------------------
 
-    private DateTime Now => _time.GetUtcNow().UtcDateTime;
+    internal DateTime Now => _time.GetUtcNow().UtcDateTime;
 
     private static void RequireSingle(PreviewKind kind)
     {

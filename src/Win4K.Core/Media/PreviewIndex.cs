@@ -95,6 +95,10 @@ public sealed class PreviewItem
     public PreviewStatus Status { get; set; }
     public string? File { get; set; }
     public long Bytes { get; set; }
+
+    /// <summary>Pixel width of a still, when known. Small thumbnails get replaced by video frames.</summary>
+    public int? Width { get; set; }
+
     public DateTime UpdatedUtc { get; set; }
     public string? Source { get; set; }
     public string? Error { get; set; }

@@ -71,6 +71,15 @@ public class PreviewLiveTests(ITestOutputHelper output) : IDisposable
                 if (mustSucceed)
                     Assert.Equal(PreviewStatus.Ready, state.Status);
             }
+
+            // A small thumbnail is replaced by a frame once the hover clip has the video at hand.
+            var final = service.Get(clip.Key, PreviewKind.Still);
+            if (final.FileName is { } still && final.Source != "thumbnail")
+            {
+                var media = probe is null ? null : await probe.ProbeAsync(Path.Combine(service.Directory, still), CancellationToken.None);
+                output.WriteLine($"{label,-13} Still upgraded from {final.Source}: " +
+                                 $"{new FileInfo(Path.Combine(service.Directory, still)).Length / 1024.0:0.0} KB, {media?.Width}x{media?.Height}");
+            }
         }
 
         var hovers = Directory.GetFiles(service.Directory, "*.mp4");
