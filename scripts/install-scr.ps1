@@ -21,6 +21,12 @@
 .PARAMETER SkipBuild
     Install whatever is already in publish\ instead of rebuilding.
 
+.PARAMETER PublishDir
+    Where to find the published Win4KSS.scr/.exe when -SkipBuild is used. Defaults to
+    <repo>\publish. The Inno Setup installer (installer/Win4KSS.iss) passes the folder it
+    just extracted its own files into, so this script works from an installed copy that
+    is not inside a clone of the repo at all.
+
 .PARAMETER SetAsDefault
     Also make Win4KSS the active screen saver and set the idle timeout.
 
@@ -49,6 +55,7 @@
 [CmdletBinding()]
 param(
     [switch]$SkipBuild,
+    [string]$PublishDir,
     [switch]$SetAsDefault,
     [int]$TimeoutMinutes = 10,
     [string]$Hotkey = 'CTRL+ALT+S',
@@ -60,7 +67,8 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $repoRoot   = Split-Path -Parent $PSScriptRoot
-$publishDir = Join-Path $repoRoot 'publish'
+if (-not $PublishDir) { $PublishDir = Join-Path $repoRoot 'publish' }
+$publishDir = $PublishDir
 $appName    = 'Win4KSS'
 $scrName    = "$appName.scr"
 $system32   = Join-Path $env:SystemRoot 'System32'
@@ -103,6 +111,7 @@ function Assert-Admin {
 
     $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
     if ($SkipBuild)      { $argList += '-SkipBuild' }
+    if ($PSBoundParameters.ContainsKey('PublishDir')) { $argList += '-PublishDir'; $argList += "`"$PublishDir`"" }
     if ($SetAsDefault)   { $argList += '-SetAsDefault'; $argList += "-TimeoutMinutes"; $argList += $TimeoutMinutes }
     if ($Uninstall)      { $argList += '-Uninstall' }
     if ($Hotkey -ne 'CTRL+ALT+S') { $argList += '-Hotkey'; $argList += "`"$Hotkey`"" }
@@ -239,8 +248,40 @@ function Stop-NonSaverInstances {
 
 # ---- uninstall --------------------------------------------------------------------------
 
+function Restore-ScreenSaverRegistration {
+    # Leaving SCRNSAVE.EXE pointing at a .scr we are about to delete means Windows tries to
+    # launch a file that no longer exists the next time the idle timer (or /now) fires.
+    # Repoint at the stock blank saver that ships with Windows when it is there; otherwise
+    # just turn the feature off rather than leave it dangling.
+    $desktopKey = 'HKCU:\Control Panel\Desktop'
+    $current = (Get-ItemProperty -Path $desktopKey -Name 'SCRNSAVE.EXE' -ErrorAction SilentlyContinue).'SCRNSAVE.EXE'
+    if ([string]::IsNullOrWhiteSpace($current)) { return }
+
+    $leaf = Split-Path -Leaf ($current.Trim().Trim('"'))
+    $isOurs = ($leaf -ieq $scrName) -or ($leaf -imatch '^WIN4KS~\d+\.SCR$') -or (Test-LegacyScreenSaverPath $current)
+    if (-not $isOurs) { return }
+
+    $stock = Join-Path $system32 'scrnsave.scr'
+    if (Test-Path $stock) {
+        Set-ItemProperty -Path $desktopKey -Name 'SCRNSAVE.EXE' -Value $stock
+        Write-Host "  SCRNSAVE.EXE -> $stock (was $current)" -ForegroundColor Green
+    } else {
+        Remove-ItemProperty -Path $desktopKey -Name 'SCRNSAVE.EXE' -ErrorAction SilentlyContinue
+        Set-ItemProperty -Path $desktopKey -Name 'ScreenSaveActive' -Value '0'
+        Write-Host "  cleared SCRNSAVE.EXE (was $current); no stock saver found, so the screen saver is now off" -ForegroundColor Green
+    }
+}
+
 if ($Uninstall) {
     Assert-Admin
+
+    # Guard against the same wedge the install path guards against: deleting the .scr out
+    # from under an actively-running /s instance leaves Windows believing one is still
+    # running (SPI_GETSCREENSAVERRUNNING stuck true) until sign-out. /p, /c and /now
+    # instances are closed first and are safe to end.
+    Stop-NonSaverInstances
+
+    Restore-ScreenSaverRegistration
 
     if (Test-Path $installed) {
         Remove-Item $installed -Force
@@ -305,27 +346,49 @@ Write-Host "Installing $scrName ($sizeMb MB) to $where..." -ForegroundColor Cyan
 Stop-NonSaverInstances
 
 New-Item -ItemType Directory -Force -Path (Split-Path $installed) | Out-Null
-Copy-Item $source $installed -Force
-Write-Host "  installed: $installed" -ForegroundColor Green
+
+# -PublishDir can legitimately point at $installed's own folder already (the Inno Setup
+# installer extracts straight into the user-scope companion dir and passes that same path
+# back in as -PublishDir), in which case $source and $installed are the same file.
+# Copy-Item throws "Cannot overwrite the item ... with itself" if asked to copy a file onto
+# its own path, so treat that as already-installed rather than as a copy to perform.
+$sourceFull = (Resolve-Path -LiteralPath $source).Path
+$installedFull = if (Test-Path -LiteralPath $installed) { (Resolve-Path -LiteralPath $installed).Path } else { $null }
+if ($installedFull -and $sourceFull -ieq $installedFull) {
+    Write-Host "  already in place: $installed" -ForegroundColor Green
+} else {
+    Copy-Item $source $installed -Force
+    Write-Host "  installed: $installed" -ForegroundColor Green
+}
 
 # Companion .exe for the shortcut to target. A hard link costs no extra disk when both
 # paths are on the same volume, which they normally are; fall back to a copy otherwise.
+# Same self-reference possibility as above: in a -UserScope install sourced from the
+# companion dir itself, $sourceExe and $companionExe are the same file already.
 New-Item -ItemType Directory -Force -Path $companionDir | Out-Null
-if (Test-Path $companionExe) { Remove-Item $companionExe -Force }
 
 $sourceExe = Join-Path $publishDir "$appName.exe"
-$linked = $false
-if ([IO.Path]::GetPathRoot($companionExe) -eq [IO.Path]::GetPathRoot($installed)) {
-    try {
-        New-Item -ItemType HardLink -Path $companionExe -Target $installed -ErrorAction Stop | Out-Null
-        $linked = $true
-    } catch {
-        $linked = $false
-    }
-}
-if (-not $linked) { Copy-Item $sourceExe $companionExe -Force }
+$companionIsSourceExe = (Test-Path -LiteralPath $sourceExe) -and (Test-Path -LiteralPath $companionExe) -and
+    ((Resolve-Path -LiteralPath $sourceExe).Path -ieq (Resolve-Path -LiteralPath $companionExe).Path)
 
-Write-Host "  companion: $companionExe$(if ($linked) { ' (hard link)' })" -ForegroundColor Green
+if ($companionIsSourceExe) {
+    Write-Host "  companion: $companionExe (already in place)" -ForegroundColor Green
+} else {
+    if (Test-Path $companionExe) { Remove-Item $companionExe -Force }
+
+    $linked = $false
+    if ([IO.Path]::GetPathRoot($companionExe) -eq [IO.Path]::GetPathRoot($installed)) {
+        try {
+            New-Item -ItemType HardLink -Path $companionExe -Target $installed -ErrorAction Stop | Out-Null
+            $linked = $true
+        } catch {
+            $linked = $false
+        }
+    }
+    if (-not $linked) { Copy-Item $sourceExe $companionExe -Force }
+
+    Write-Host "  companion: $companionExe$(if ($linked) { ' (hard link)' })" -ForegroundColor Green
+}
 
 # ---- shortcuts --------------------------------------------------------------------------
 
