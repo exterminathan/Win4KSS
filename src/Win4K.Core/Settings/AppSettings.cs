@@ -82,6 +82,33 @@ public sealed class AppSettings
     /// <summary>Overrides the tarball probe. Normally null; exposed for debugging a bad manifest.</summary>
     public string? ManifestUrlOverride { get; set; }
 
+    // ---- updates (Win4K.Core.Updates.UpdateChecker) -----------------------------------------
+    // Additive, so files without these load with the defaults below. Deliberately NOT part of
+    // SettingsPortability's export/import (apart from AutoCheckForUpdates): the last-check time
+    // and result describe this machine's own history, not a choice worth carrying to another one.
+
+    /// <summary>
+    /// Whether the clip browser checks for app updates on open, at most once every 24 hours
+    /// (<see cref="Updates.UpdateChecker"/>). The manual "Check now" button in Settings &gt; About
+    /// works regardless of this. Never consulted outside the browser — see CLAUDE.md "Never
+    /// during the saver" and <c>Program.AllowsUpdateCheck</c>. TODO(review): exact placement
+    /// (its own settings section vs. folded into "about") is a judgment call; it travels in
+    /// SettingsPortability's "playback" section for now.
+    /// </summary>
+    public bool AutoCheckForUpdates { get; set; } = true;
+
+    /// <summary>When the update checker last actually ran (UTC), successful or not. Null before the first check.</summary>
+    public DateTime? LastUpdateCheckUtc { get; set; }
+
+    /// <summary>The latest version the last check found, if any (regardless of whether it was newer). Null if there was no release to compare, or the check failed.</summary>
+    public string? LastUpdateLatestVersion { get; set; }
+
+    /// <summary>Whether <see cref="LastUpdateLatestVersion"/> was newer than this build, as of <see cref="LastUpdateCheckUtc"/>.</summary>
+    public bool LastUpdateAvailable { get; set; }
+
+    /// <summary>The newer release's notes (its GitHub release body), when <see cref="LastUpdateAvailable"/> is true. Null otherwise.</summary>
+    public string? LastUpdateNotes { get; set; }
+
     /// <summary>
     /// Clip key (<see cref="Clip.Id"/>) → number of sessions in which the clip failed twice and was benched. Written by
     /// <see cref="Playback.ClipHealth"/>; 3 or more means "unhealthy". Additive, so v1 files
