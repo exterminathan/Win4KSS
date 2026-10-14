@@ -33,8 +33,13 @@
 
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>false</SelfContained>
-    <PublishSingleFile>true</PublishSingleFile>
-    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <!-- Publish used to be single-file (PublishSingleFile + IncludeNativeLibrariesForSelfExtract),
+         bundling libmpv-2.dll/WebView2Loader.dll inside Win4KSS.exe/.scr via self-extraction.
+         That self-extracting-native-DLL shape is exactly what triggered a Bitdefender heuristic
+         false positive on an unsigned download (Windows Defender scans the same file clean).
+         Publish now produces ordinary loose files: Win4KSS.exe/.scr beside Win4K.Core.dll,
+         libmpv-2.dll, WebView2Loader.dll, etc. See install-scr.ps1's System32-mode guard and
+         ShortcutManager.EnsureCompanionExe/IsSingleFileBuild, both of which now assume this. -->
     <!-- WebView2 ships IntelliSense XML beside its assemblies; keep it out of publish/. -->
     <AllowedReferenceRelatedFileExtensions>.pdb</AllowedReferenceRelatedFileExtensions>
   </PropertyGroup>
