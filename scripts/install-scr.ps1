@@ -94,6 +94,24 @@ $legacyUserScr   = Join-Path $legacyDir "$legacyName.scr"
 $legacyUserExe   = Join-Path $legacyDir "$legacyName.exe"
 $legacySystemScr = Join-Path $system32 "$legacyName.scr"
 
+function Test-SingleFilePublish {
+    # A single-file publish (PublishSingleFile + IncludeNativeLibrariesForSelfExtract) bundles
+    # Win4K.Core.dll and libmpv-2.dll INSIDE the exe/.scr via self-extraction, so neither sits
+    # beside it on disk. The now-normal loose multi-file publish leaves both sitting right next
+    # to the exe. Checking for either is a reliable, build-output-stable signal: both file names
+    # come from this project's own output (ProjectReference / native/mpv), not a third party that
+    # could rename them. System32 mode needs this to be true -- copying only the .scr there
+    # without its sibling DLLs produces a screen saver Windows cannot actually run.
+    param([string]$Dir, [string]$ExeName)
+
+    $exePath = Join-Path $Dir $ExeName
+    if (-not (Test-Path -LiteralPath $exePath)) { return $false }
+
+    $core   = Join-Path $Dir 'Win4K.Core.dll'
+    $libmpv = Join-Path $Dir 'libmpv-2.dll'
+    return -not ((Test-Path -LiteralPath $core) -or (Test-Path -LiteralPath $libmpv))
+}
+
 function Test-Admin {
     $identity  = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object Security.Principal.WindowsPrincipal($identity)
@@ -333,6 +351,26 @@ if (-not $SkipBuild) {
 $source = Join-Path $publishDir $scrName
 if (-not (Test-Path $source)) {
     throw "$source not found. Run without -SkipBuild."
+}
+
+# System32 mode needs a single-file build: it copies only the .scr there, and a loose
+# multi-file publish's sibling DLLs (Win4K.Core.dll, libmpv-2.dll, WebView2Loader.dll, ...)
+# would simply be missing from System32 -- Windows would list it in the dropdown and then fail
+# to run it. Refuse up front with a clear reason rather than silently installing something
+# broken. -UserScope is unaffected: its companion dir already gets the whole publish folder
+# copied together (see below), so it keeps working exactly as before.
+# TODO(review): if System32 support for a loose multi-file build is ever wanted, this would need
+# to copy every sibling file alongside the .scr into System32 too, not just refuse.
+if (-not $UserScope) {
+    if (-not (Test-SingleFilePublish -Dir $publishDir -ExeName "$appName.exe")) {
+        throw "System32 install needs a single-file publish, but '$publishDir' is a loose " +
+              "multi-file build (Win4K.Core.dll and/or libmpv-2.dll sit beside $appName.exe). " +
+              "Copying just $scrName into System32 without those sibling files would produce a " +
+              "screen saver Windows cannot actually run. Use -UserScope instead -- it is a fully " +
+              "working install in every other respect (idle trigger, resume lock, the hotkey, " +
+              "/c and /p from the Settings dialog); the only thing it gives up is appearing in " +
+              "the Screen Saver Settings dropdown, which only ever lists System32."
+    }
 }
 
 # ---- install ----------------------------------------------------------------------------
