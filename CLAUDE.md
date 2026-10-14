@@ -8,14 +8,15 @@ Built for one user, on one machine, for personal use. Git repo with a private Gi
 
 ## Status
 
-**Built, installed (user scope), and working.** The original eight phases (2026-08-12) and clip-browser phases A–G (2026-10-13) are complete: streaming reliability, unified clip model with in-app catalogue refresh, cache pins + download queue + cross-process safety, browser previews, the WebView2 browser on `/c`, settings v2 (per-clip rotation). **525 tests green** (live tests inert by default). `/s`, `/c`, `/p`, `/w` and `/now` verified against the published build; 4K HEVC streams and plays with `d3d11va` hardware decode. The browser was driven live against a copy of the real profile: stills, facet filtering, sorts, hover clips, the live mpv preview, pin progress, catalogue refresh, the auto-add prompt.
+**Built, installed (user scope), and working.** The original eight phases (2026-08-12) and clip-browser phases A–G (2026-10-13) are complete: streaming reliability, unified clip model with in-app catalogue refresh, cache pins + download queue + cross-process safety, browser previews, the WebView2 browser on `/c`, settings v2 (per-clip rotation). **528 tests green** (live tests inert by default). `/s`, `/c`, `/p`, `/w` and `/now` verified against the published build; 4K HEVC streams and plays with `d3d11va` hardware decode. The browser was driven live against a copy of the real profile: stills, facet filtering, sorts, hover clips, the live mpv preview, pin progress, catalogue refresh, the auto-add prompt.
 
 Installed at `%LOCALAPPDATA%\Programs\Win4KSS\` (renamed from `Win4KAerial` 2026-10-12; `install-scr.ps1` removes the old files and repoints `SCRNSAVE.EXE`) with Desktop + Start Menu shortcuts bound to `Ctrl+Alt+S`. The walk-away chain was observed end to end: shortcut → `StartNow` → Windows launched our saver → 1500 ms manual grace → playing from cache. In daily use since 2026-08-14 as the idle saver (30-min timeout); the cache sits at its 20 GB budget, so LRU eviction is active.
 
-**The installed build matches `publish/`** (reinstalled 2026-10-13 with all clip-browser phases). Its first run migrates `settings.json` to v2, backing up v1 to `settings.v1.json`.
+**The installed build matches `publish/`** (reinstalled 2026-10-13 from the loose multi-file publish; the installed `.scr` was run with `/w` and played from cache through the loose `libmpv-2.dll`). Settings are v2; the v1 file is kept as `settings.v1.json`.
 
 Outstanding:
-- **System32 install** (only needed to appear in the Screen Saver Settings *dropdown*) — needs elevation: `scripts/install-scr.ps1 -SetAsDefault`.
+- **No System32 install.** Publish is no longer single-file, and `install-scr.ps1` refuses System32 mode for a loose publish (copying only the `.scr` there would leave it without its DLLs). User scope is a fully working install; the only loss is not appearing in the Screen Saver Settings *dropdown*. Supporting it again would mean copying every sibling file into System32.
+- **Code signing.** The unsigned v1.0.0 installer drew a Bitdefender heuristic false positive. Loose files remove the self-extracting-dropper pattern but not the zero-reputation one; signing (e.g. Azure Trusted Signing) is the durable fix.
 
 Resolved: the "archive-org clips fail to stream ~23% of the time" problem (169 of 724 loads, Aug 14 – Oct 12). It was three bugs of ours, not archive.org flakiness — see the streaming entry under Key facts. The 23% understated it: 163/163 attempts to stream an *uncached* archive clip failed, and 165 of the 169 failures blacked out the saver until dismissal.
 
@@ -51,7 +52,7 @@ Win4KScreensavers/
 │                            browser-mock/ (page dev harness: dev.html + shim.js + fixture.json + assets/; never embedded)
 ├── native/mpv/              libmpv-2.dll — gitignored, fetched by script
 ├── scripts/                 fetch-libmpv.ps1, install-scr.ps1
-├── publish/                 single-file output (gitignored)
+├── publish/                 loose multi-file publish output (gitignored)
 ├── Win4KScreensavers.slnx
 ├── CLAUDE.md                this file
 └── PLAN.md                  design, build order, findings
@@ -72,8 +73,8 @@ Runtime state lives in `%LOCALAPPDATA%\Win4KScreensavers\`:
 - **Build:** `dotnet build` · **Test:** `dotnet test` · **Run windowed:** `dotnet run --project src/Win4K.ScreenSaver -- /w`
 - **Live network tests** are inert by default: `$env:WIN4K_LIVE_TESTS="1"; dotnet test`. `StreamSmokeLiveTests` is the "streams as well as Apple" gate (5 uncached clips per source must reach `file-loaded` within 15 s).
 - **Test isolation:** `TestEnvironment` points `WIN4K_HOME` at a temp dir for the whole run; a test that needs its own app-data root uses `using var _ = AppPaths.UseRoot(dir)` (AsyncLocal). Never set `WIN4K_HOME` inside a test — it is process-wide, and flipping it is what made `CaBundleTests` fail intermittently. Harvester tests use `Fakes/FixtureHttp`, playlist tests `FakeMpvPlayer` — never the network.
-- **Publish:** `dotnet publish src/Win4K.ScreenSaver/Win4K.ScreenSaver.csproj -c Release -o publish` (single-file, ~124 MB; `WebView2Loader.dll` is bundled and self-extracted like libmpv)
-- **Install:** `scripts/install-scr.ps1` (self-elevates; `-SetAsDefault`, `-Uninstall`)
+- **Publish:** `dotnet publish src/Win4K.ScreenSaver/Win4K.ScreenSaver.csproj -c Release -o publish` (loose files, ~118 MB: a ~160 KB `Win4KSS.exe`/`.scr` apphost pair beside `Win4KSS.dll`, `Win4K.Core.dll`, `libmpv-2.dll`, the WebView2 DLLs and `runtimes\`). Not single-file since 2026-10-13: self-extracting native DLLs drew an antivirus false positive
+- **Install:** `scripts/install-scr.ps1 -UserScope -SetAsDefault -TimeoutMinutes 30 -SkipBuild` (mirrors the whole publish folder into `%LOCALAPPDATA%\Programs\Win4KSS\`; `-Uninstall` removes it). System32 mode refuses a loose publish.
 - **Debugging playback:** `$env:WIN4K_MPV_LOG="1"` raises `mpv.log` from `all=warn,curl=v` to full debug. Every `loadfile` URL and mpv's errors are also logged to `win4k.log`.
 - Both projects need `<AllowUnsafeBlocks>` — `[LibraryImport]` source-generated marshalling requires it
 - Prefer `HttpClient` + `CancellationToken`; no `async void`, no `WebClient`.
@@ -111,7 +112,7 @@ Runtime state lives in `%LOCALAPPDATA%\Win4KScreensavers\`:
 - **Input dismissal cannot be tested from an automated session** — a non-interactive desktop refuses `SetCursorPos` and `GetCursorPos` reports `0,0`. The decision logic is unit-tested via `InputDismissWatcher.HasMovedEnough`; the polling needs a human with a real mouse.
 - Only **4 of Apple's 114** clips carry a day/night label, so time-of-day ordering barely moves anything.
 - **Previews shell out to ffmpeg, a GnuTLS build whose `tls_verify` defaults to 0** — it checks nothing. Always pass `-tls_verify 1 -ca_file <ca-bundle.pem>` (`PreviewCommands` does). Apple and Amazon `.mov` files keep `moov` at the tail, so a Range-fetched head is useless; `Mp4Boxes.IndexIsBeyond` spots this after 64 KB and ffmpeg reads the URL instead (~4 s per hover clip). archive.org serves ~1.3 MB/s, so the head-segment route is slower there too (~22 s and 27 MB vs ~7.6 s for ffmpeg direct); so ffmpeg reads the URL directly by default (`MediaPreviewOptions.UseHeadSegments` switches back to head segments). archive.org `.thumbs` are 160 px, so stills are upgraded to a 480 px frame whenever a hover clip has the video at hand. Hover clips must be `-pix_fmt yuv420p`: Apple's sources are 10-bit, and High 10 H.264 won't play in Chromium.
-- libmpv is **114 MB**; the published `.scr` is ~124 MB with WebView2.
+- libmpv is **114 MB** and ships as a loose file; the whole publish folder is ~118 MB.
 - **Local toolchain, verified:** .NET 10.0.302 SDK + WindowsDesktop 10.0.10 · VS2022 · ffmpeg/ffprobe at `C:\ffmpeg` · yt-dlp 2026.07.04 · RTX 2080 Super (hardware HEVC Main10 decode) · HEVC Video Extensions installed.
 
 ## Video source registry
@@ -134,7 +135,7 @@ The `harvest: "auto"` sources are harvested **in C#** (`Win4K.Core/Catalogs/`), 
 
 ## Packaging
 
-A real double-click installer lives in `installer/Win4KSS.iss` (Inno Setup 6), built by `scripts/build-installer.ps1`: fetches `libmpv-2.dll` if missing (a build-time input — `dotnet publish` empirically embeds it and `WebView2Loader.dll` *inside* `Win4KSS.exe`/`.scr` via `IncludeNativeLibrariesForSelfExtract`; neither shows up as a loose file in `publish/`), publishes, sanity-checks the output size, then compiles with Inno's `ISCC.exe` (installed via `winget install JRSoftware.InnoSetup` if missing) into `installer/output/Win4KSS-Setup-<version>.exe`. The installer calls `scripts/install-scr.ps1` itself for the registry/shortcut/SPI work (now takes `-PublishDir` so it can run from an installed copy, not just a repo clone) rather than reimplementing any of it in Pascal — see that script's updated `-Uninstall` branch for the two gaps closed while wiring this up: it now guards against a running `/s` instance the same way install does, and repoints/clears `SCRNSAVE.EXE` instead of leaving it pointing at a deleted file. End-user docs are `README.md`, `docs/THIRD-PARTY-NOTICES.md` (libmpv's GPL build — PLAN.md risk 7 — plus the CC BY-NC-ND / Pixabay / public-domain breakdown of the harvested catalogue), and `docs/TROUBLESHOOTING.md`.
+A real double-click installer lives in `installer/Win4KSS.iss` (Inno Setup 6), built by `scripts/build-installer.ps1`: fetches `libmpv-2.dll` if missing, publishes (loose files: the installer's `[Files]` lists every one, and always installs user-scope), sanity-checks the output size, then compiles with Inno's `ISCC.exe` (installed via `winget install JRSoftware.InnoSetup` if missing) into `installer/output/Win4KSS-Setup-<version>.exe`. The installer calls `scripts/install-scr.ps1` itself for the registry/shortcut/SPI work (now takes `-PublishDir` so it can run from an installed copy, not just a repo clone) rather than reimplementing any of it in Pascal — see that script's updated `-Uninstall` branch for the two gaps closed while wiring this up: it now guards against a running `/s` instance the same way install does, and repoints/clears `SCRNSAVE.EXE` instead of leaving it pointing at a deleted file. End-user docs are `README.md`, `docs/THIRD-PARTY-NOTICES.md` (libmpv's GPL build — PLAN.md risk 7 — plus the CC BY-NC-ND / Pixabay / public-domain breakdown of the harvested catalogue), and `docs/TROUBLESHOOTING.md`.
 
 ## Notes for Claude
 
