@@ -460,6 +460,15 @@ if ($installedFull -and $sourceFull -ieq $installedFull) {
     Write-Host "  installed: $installed" -ForegroundColor Green
 }
 
+# A stray $companionDir\Win4KSS.scr left over from an earlier -UserScope install (where it WAS
+# $installed) has nothing pointing at it once System32 mode takes over -- SCRNSAVE.EXE now
+# points at the System32 copy instead -- but it would otherwise just sit there, still
+# hard-linked to the companion exe until that gets overwritten below, going stale across
+# upgrades and inviting a "which .scr is this" confusion. Harmless, but cheap to clean up.
+if (-not $UserScope) {
+    Remove-FileTolerant (Join-Path $companionDir $scrName)
+}
+
 # Unconditional, regardless of install scope: the companion .exe is what every shortcut
 # targets (the .scr itself can't be, see the header comment), in BOTH System32 and -UserScope
 # mode, and it needs its sibling DLLs (Win4K.Core.dll, libmpv-2.dll, WebView2Loader.dll,
