@@ -26,15 +26,33 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
+      # A solution-wide `dotnet restore` (no explicit -r) does NOT reliably pull the win-x64
+      # runtime pack into the restore graph even though Win4K.ScreenSaver.csproj pins
+      # RuntimeIdentifier=win-x64 statically -- confirmed by two consecutive CI failures after
+      # trying exactly that; a dev machine never hits this because its NuGet cache is already
+      # warmed from months of prior `-r win-x64` restores, which CI's starts without. Restoring
+      # the screensaver project directly, WITH an explicit -r win-x64, is what actually forces
+      # the runtime-pack restore path (the well-documented fix for NETSDK1112 in CI).
+      - name: Restore
+        shell: pwsh
+        run: |
+          dotnet restore Win4KScreensavers.slnx
+          dotnet restore src\Win4K.ScreenSaver\Win4K.ScreenSaver.csproj -r win-x64
+
       - name: Run tests
         shell: pwsh
-        run: dotnet test -c Release
+        run: dotnet test -c Release --no-restore
 
       # A build-time input to dotnet publish (Win4K.Core.csproj only flows it into the build if
       # the file already exists), so this has to happen before the next step -- same order
       # scripts/build-installer.ps1 itself documents and relies on.
       - name: Fetch libmpv
         shell: pwsh
+        env:
+          # Raises fetch-libmpv.ps1's api.github.com call from the 60/hour unauthenticated,
+          # shared-IP limit (which actual CI runs confirmed gets exhausted by unrelated Actions
+          # traffic) to a 5,000/hour pool scoped to this job's own token.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./scripts/fetch-libmpv.ps1
 
       # Publishes (both the loose multi-file build and the separate System32 one-file .scr),
@@ -64,7 +82,7 @@ jobs:
       # artifact above for signing here, e.g.:
       #
       #   - name: Submit for signing
-      #     uses: signpath/github-action-submit-signing-request@v1
+      #     uses: signpath/github-action-submit-signing-request@v3  # check docs.signpath.io for the current version at setup time
       #     with:
       #       api-token: "${{ secrets.SIGNPATH_API_TOKEN }}"
       #       organization-id: "<signpath-org-id>"

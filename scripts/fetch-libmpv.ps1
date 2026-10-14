@@ -69,7 +69,17 @@ function Resolve-SevenZip {
 
 Write-Host 'Querying latest mpv-dev release...' -ForegroundColor Cyan
 
+# Unauthenticated api.github.com calls are capped at 60/hour *per IP*, and GitHub Actions
+# runners share outbound IP ranges across unrelated workflows -- that pool is frequently
+# already exhausted before this script ever runs, confirmed by an actual CI failure, not
+# assumed. GITHUB_TOKEN (automatically available as a job-scoped secret in Actions, see
+# .github/workflows/build-installer.yml) raises this to 5,000/hour and draws from a separate,
+# per-token pool. Local runs have no such variable set and fall back to unauthenticated exactly
+# as before -- this never requires a token to work, it just avoids CI's shared-IP problem
+# when one happens to be available.
 $headers = @{ 'User-Agent' = 'Win4KScreensavers-fetch-libmpv' }
+$ghToken = if ($env:GITHUB_TOKEN) { $env:GITHUB_TOKEN } elseif ($env:GH_TOKEN) { $env:GH_TOKEN } else { $null }
+if ($ghToken) { $headers['Authorization'] = "Bearer $ghToken" }
 $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest' -Headers $headers
 
 # Match mpv-dev-x86_64-<date>-git-<sha>.7z but NOT mpv-dev-x86_64-v3-... (AVX2-only build).
