@@ -52,6 +52,9 @@ public sealed class BrowserBridgeOptions
     /// Tests that do not care about updates get this behaviour for free by leaving it null.
     /// </summary>
     public UpdateChecker? UpdateChecker { get; init; }
+
+    /// <summary>Builds the <see cref="UpdateInstaller"/> an <c>installUpdate</c> uses. Default: a plain one (real HttpClient, real Process.Start). A test seam, so download/verify can run over fixture HTTP with a fake launch.</summary>
+    public Func<UpdateInstaller>? CreateInstaller { get; init; }
 }
 
 /// <summary>
@@ -93,6 +96,7 @@ public sealed class BrowserBridge : IDisposable
     private readonly Func<AppSettings, CancellationToken, Task<IReadOnlyList<ClipInfo>>> _loadCatalog;
     private readonly Func<IProgress<CatalogRefreshProgress>, CancellationToken, Task<CatalogRefreshReport>> _refresh;
     private readonly UpdateChecker? _updateChecker;
+    private readonly Func<UpdateInstaller> _createInstaller;
     private readonly TimeProvider _time;
     private readonly BrowserBridgeOptions _options;
     private readonly CancellationTokenSource _shutdown = new();
@@ -145,6 +149,7 @@ public sealed class BrowserBridge : IDisposable
         _loadCatalog = _options.LoadCatalog ?? ((s, ct) => ClipLibrary.LoadAsync(s, ct));
         _refresh = _options.RefreshCatalogs ?? ((p, ct) => new CatalogRefresher().RefreshAsync(null, p, ct));
         _updateChecker = _options.UpdateChecker;
+        _createInstaller = _options.CreateInstaller ?? (() => new UpdateInstaller());
         _time = _options.Time ?? TimeProvider.System;
 
         // PinManager saves after every change; route that through the debounce like every other edit.
@@ -794,7 +799,7 @@ public sealed class BrowserBridge : IDisposable
                 return;
             }
 
-            var installer = new UpdateInstaller();
+            var installer = _createInstaller();
             var progress = new Progress<UpdateDownloadProgress>(p =>
                 Marshal(() => Post(UpdateInstallProgressMessage.Downloading(p))));
 

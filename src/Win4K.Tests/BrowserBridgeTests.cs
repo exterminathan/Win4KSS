@@ -1,11 +1,13 @@
 using System.Drawing;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Security.Cryptography;
 using System.Text.Json;
 using Win4K.Core;
 using Win4K.Core.Caching;
 using Win4K.Core.Catalogs;
 using Win4K.Core.Media;
+using Win4K.Core.Updates;
 using Win4K.ScreenSaver;
 using Win4K.ScreenSaver.Browser;
 using Win4K.Tests.Fakes;
@@ -123,7 +125,9 @@ public class BrowserBridgeTests : IDisposable
         Func<IReadOnlyList<ClipInfo>>? catalogue = null,
         Func<IProgress<CatalogRefreshProgress>, CancellationToken, Task<CatalogRefreshReport>>? refresh = null,
         Action<AppSettings>? save = null,
-        Func<bool>? refreshDue = null)
+        Func<bool>? refreshDue = null,
+        UpdateChecker? updateChecker = null,
+        Func<UpdateInstaller>? createInstaller = null)
     {
         settings ??= NewSettings();
         var cache = Track(new VideoCache(settings, watchForChanges: false));
@@ -151,13 +155,15 @@ public class BrowserBridgeTests : IDisposable
             SaveDebounce = TimeSpan.FromHours(1),
             DeltaInterval = TimeSpan.FromHours(1),
             PreviewBackgroundFill = false,
+            UpdateChecker = updateChecker,
+            CreateInstaller = createInstaller,
         }));
         return new Built(bridge, settings, cache, queue, previews);
     }
 
-    private async Task<Built> CreateReady(AppSettings? settings = null)
+    private async Task<Built> CreateReady(AppSettings? settings = null, UpdateChecker? updateChecker = null, Func<UpdateInstaller>? createInstaller = null)
     {
-        var built = Create(settings);
+        var built = Create(settings, updateChecker: updateChecker, createInstaller: createInstaller);
         await built.Bridge.InitializeAsync();
         Send(built.Bridge, new { type = "ready" });
         return built;
@@ -1041,7 +1047,236 @@ public class BrowserBridgeTests : IDisposable
         Assert.Equal("warning", Messages("notice").Last().GetProperty("level").GetString());
     }
 
-    // ---- pure helpers ------------------------------------------------------------------------
+    // ---- updates -----------------------------------------------------------------------------
+
+    private static ReleaseInfo AvailableRelease(string tag = "v99.0.0") =>
+        new(tag, "name", "release notes", false, false,
+            [new ReleaseAsset("Win4KSS-Setup-99.0.0.exe", 12, "https://example.test/Win4KSS-Setup-99.0.0.exe"),
+             new ReleaseAsset("Win4KSS-Setup-99.0.0.exe.sha256", 90, "https://example.test/Win4KSS-Setup-99.0.0.exe.sha256")],
+            null);
+
+    private sealed class FakeUpdateSource(Func<ReleaseInfo?> respond) : IUpdateSource
+    {
+        public int Calls { get; private set; }
+        public Task<ReleaseInfo?> GetLatestReleaseAsync(CancellationToken cancellationToken)
+        {
+            Calls++;
+            return Task.FromResult(respond());
+        }
+    }
+
+    private sealed class FixedTime(DateTime utc) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => new(utc, TimeSpan.Zero);
+    }
+
+    [Fact]
+    public async Task Opening_the_browser_checks_once_and_posts_updateStatus()
+    {
+        var source = new FakeUpdateSource(() => AvailableRelease());
+        var settings = NewSettings();
+        var checker = new UpdateChecker(settings, new UpdateCheckerOptions { Source = source });
+
+        var built = await CreateReady(settings, checker);
+
+        var status = Messages("updateStatus").Single();
+        Assert.True(status.GetProperty("available").GetBoolean());
+        Assert.Equal("99.0.0", status.GetProperty("latest").GetString());
+        Assert.Equal(1, source.Calls);
+        Assert.True(settings.LastUpdateAvailable);
+    }
+
+    [Fact]
+    public async Task A_reload_replays_the_last_status_without_checking_again()
+    {
+        var source = new FakeUpdateSource(() => AvailableRelease());
+        var settings = NewSettings();
+        var checker = new UpdateChecker(settings, new UpdateCheckerOptions { Source = source });
+        var built = await CreateReady(settings, checker);
+        Assert.Equal(1, source.Calls);
+        ClearPosted();
+
+        Send(built.Bridge, new { type = "ready" }); // a page reload
+
+        Assert.Equal(1, source.Calls); // not re-checked
+        var status = Messages("updateStatus").Single();
+        Assert.True(status.GetProperty("available").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Disabling_the_toggle_skips_the_automatic_check_but_not_a_manual_one()
+    {
+        var source = new FakeUpdateSource(() => AvailableRelease());
+        var settings = NewSettings();
+        settings.AutoCheckForUpdates = false;
+        var checker = new UpdateChecker(settings, new UpdateCheckerOptions { Source = source });
+
+        var built = await CreateReady(settings, checker);
+        Assert.Equal(0, source.Calls);
+        Assert.Empty(Messages("updateStatus"));
+
+        Send(built.Bridge, new { type = "checkUpdates" });
+        await WaitFor(_ => true, "updateStatus");
+
+        Assert.Equal(1, source.Calls); // "Check now" ignores the toggle
+    }
+
+    [Fact]
+    public async Task Check_now_bypasses_the_24_hour_throttle()
+    {
+        var now = DateTime.UtcNow;
+        var settings = NewSettings();
+        settings.LastUpdateCheckUtc = now; // "already checked moments ago"
+        settings.LastUpdateAvailable = false;
+        var source = new FakeUpdateSource(() => AvailableRelease());
+        var checker = new UpdateChecker(settings, new UpdateCheckerOptions { Source = source, Time = new FixedTime(now) });
+
+        // The automatic check on open still runs, but is throttled -- the real check never fires.
+        var built = await CreateReady(settings, checker);
+        Assert.Equal(0, source.Calls);
+        Assert.False(Messages("updateStatus").Single().GetProperty("available").GetBoolean());
+        ClearPosted();
+
+        Send(built.Bridge, new { type = "checkUpdates" }); // bypasses the throttle
+        await WaitFor(_ => true, "updateStatus");
+
+        Assert.Equal(1, source.Calls);
+        Assert.True(Messages("updateStatus").Single().GetProperty("available").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Installing_with_nothing_available_refuses_with_a_notice()
+    {
+        var settings = NewSettings();
+        var checker = new UpdateChecker(settings, new UpdateCheckerOptions { Source = new FakeUpdateSource(() => null) });
+        var built = await CreateReady(settings, checker);
+        ClearPosted();
+
+        Send(built.Bridge, new { type = "installUpdate" });
+        await WaitFor(_ => true, "notice");
+
+        Assert.Equal("warning", Messages("notice").Single().GetProperty("level").GetString());
+        Assert.Equal(0, _host.HandoffCalls);
+    }
+
+    private static string Sha256Hex(byte[] bytes) => Convert.ToHexStringLower(SHA256.HashData(bytes));
+
+    [Fact]
+    public async Task A_hash_mismatch_refuses_to_launch_and_never_hands_off_to_the_host()
+    {
+        var bytes = "fake installer bytes"u8.ToArray();
+        var release = AvailableRelease();
+        var exeUrl = release.Assets[0].DownloadUrl;
+        var hashUrl = release.Assets[1].DownloadUrl;
+        var wrongHash = Sha256Hex("not the right content"u8.ToArray()); // a real, but mismatching, SHA-256
+        var http = new FixtureHttp()
+            .Respond(exeUrl, () => new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new ByteArrayContent(bytes) })
+            .Text(hashUrl, $"{wrongHash}  Win4KSS-Setup-99.0.0.exe\n");
+
+        var settings = NewSettings();
+        var checker = new UpdateChecker(settings, new UpdateCheckerOptions { Source = new FakeUpdateSource(() => release with { Assets = [new ReleaseAsset(release.Assets[0].Name, bytes.Length, exeUrl), release.Assets[1]] }) });
+        var launched = new List<string>();
+        var built = await CreateReady(settings, checker,
+            createInstaller: () => new UpdateInstaller(new UpdateInstallerOptions { Http = http.Client(), Launch = launched.Add }));
+        ClearPosted();
+
+        Send(built.Bridge, new { type = "installUpdate" });
+        await WaitFor(_ => true, "notice");
+
+        Assert.Empty(launched);
+        Assert.Equal(0, _host.HandoffCalls);
+        Assert.Equal("error", Messages("notice").Last().GetProperty("level").GetString());
+        var progress = Messages("updateInstallProgress").Last();
+        Assert.Equal("Failed", progress.GetProperty("stage").GetString());
+    }
+
+    /// <summary>
+    /// The real hazard this feature has to survive: install-scr.ps1's Stop-NonSaverInstances
+    /// force-kills any non-/s Win4KSS process once the installer's [Run] step reaches it, and
+    /// this browser is exactly such a process. On a verified install, the bridge must hand off
+    /// to <see cref="IBrowserHost.PrepareForInstallerHandoff"/> — here wired to actually run the
+    /// disposal sequence BrowserForm.Shutdown performs (bridge, then queue, then cache) — and
+    /// queue.json plus settings.json must both come out the other side in a consistent, flushed
+    /// state, not just "didn't throw". A pin queued through the ordinary setPinned path (so
+    /// queue.json has a real resumable job in it) and a settings edit sitting in the debounce
+    /// are both still unflushed the moment Install is clicked; neither may be lost.
+    /// </summary>
+    [Fact]
+    public async Task A_verified_install_launches_then_hands_off_and_leaves_queue_and_settings_consistent()
+    {
+        var bytes = "a verified installer payload"u8.ToArray();
+        var release = AvailableRelease();
+        var exeUrl = release.Assets[0].DownloadUrl;
+        var hashUrl = release.Assets[1].DownloadUrl;
+        var http = new FixtureHttp()
+            .Respond(exeUrl, () => new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new ByteArrayContent(bytes) })
+            .Text(hashUrl, $"{Sha256Hex(bytes)}  Win4KSS-Setup-99.0.0.exe\n");
+
+        var settingsPath = Path.Combine(_root, "settings.json");
+        var settings = NewSettings();
+        var fetchedRelease = release with { Assets = [new ReleaseAsset(release.Assets[0].Name, bytes.Length, exeUrl), release.Assets[1]] };
+        var checker = new UpdateChecker(settings, new UpdateCheckerOptions { Source = new FakeUpdateSource(() => fetchedRelease) });
+        var launched = new List<string>();
+
+        // A real save delegate (writing to a temp settings.json) rather than the default
+        // Interlocked.Increment fake -- this test cares whether the file on disk ends up
+        // consistent, not just whether a save was attempted.
+        var built = Create(settings, save: s => s.Save(settingsPath), updateChecker: checker,
+            createInstaller: () => new UpdateInstaller(new UpdateInstallerOptions { Http = http.Client(), Launch = launched.Add }));
+        await built.Bridge.InitializeAsync();
+        Send(built.Bridge, new { type = "ready" });
+
+        // A pin download queued the ordinary way (queue.json now has a real, resumable job in
+        // it) and a settings edit still sitting in the debounce -- exactly the two things the
+        // hand-off must not lose or corrupt.
+        Send(built.Bridge, new { type = "setPinned", keys = new[] { Apple.Key }, value = true });
+        Assert.Equal(DownloadPriority.Pin, built.Queue.Get(Apple.Key)!.Priority);
+        var newShuffle = !built.Settings.Shuffle;
+        Send(built.Bridge, new { type = "saveSettings", patch = new { shuffle = newShuffle } });
+
+        // SaveDebounce is an hour in this harness, so this edit is still only pending in
+        // memory: whatever is on disk right now (if anything, from the initial catalogue
+        // migration) does not yet reflect it -- proving there really is something for the
+        // hand-off to flush, not just re-reading a value that was already there.
+        if (File.Exists(settingsPath))
+            Assert.NotEqual(newShuffle, AppSettings.Load(settingsPath).Shuffle);
+
+        // Mirrors BrowserForm.Shutdown()'s order for the pieces that matter to data integrity:
+        // bridge first (flushes the pending debounced save), then the queue, then the cache.
+        _host.OnHandoff = () =>
+        {
+            built.Bridge.Dispose();
+            built.Queue.Dispose();
+            built.Cache.Dispose();
+        };
+
+        ClearPosted();
+        Send(built.Bridge, new { type = "installUpdate" });
+
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (DateTime.UtcNow < deadline && _host.HandoffCalls == 0)
+            await Task.Delay(20);
+
+        Assert.Equal(1, _host.HandoffCalls);
+        Assert.Single(launched);
+        Assert.True(File.Exists(launched[0])); // the verified installer was never deleted out from under us
+        File.Delete(launched[0]); // ...cleaning it up once "launched" is this test's job, not the bridge's
+
+        // queue.json: still valid JSON, and the pin job survived the disposal -- resumable
+        // next run, exactly as BrowserForm.Shutdown's own comment on DownloadQueue.Dispose says
+        // ("Partials and queue.json are kept, so pins resume next time").
+        var queueJsonPath = Path.Combine(built.Cache.Root, DownloadQueue.FileName);
+        var queueFile = JsonSerializer.Deserialize<DownloadQueue.QueueFile>(
+            File.ReadAllText(queueJsonPath), new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        Assert.NotNull(queueFile);
+        Assert.Contains(queueFile!.Jobs, j => j.ClipKey == Apple.Key);
+
+        // settings.json: the debounced edit reached disk through this exact shutdown path.
+        Assert.True(File.Exists(settingsPath));
+        var reloaded = AppSettings.Load(settingsPath);
+        Assert.Equal(newShuffle, reloaded.Shuffle);
+        Assert.Contains(Apple.Key, reloaded.KeptOffline);
+    }
 
     [Fact]
     public void Panel_rect_converts_css_pixels_by_zoom_and_dpi()
