@@ -1360,6 +1360,7 @@
     const p = pane('about');
     p.innerHTML = `
       <h3>Win4KSS</h3>
+      <div class="about-tagline">True 4K aerial screen saver for Windows</div>
       <div class="about-block">
         4K video screen saver for Windows.<br>
         Version <code id="about-version"></code> \u00b7 libmpv API <code id="about-mpv"></code>

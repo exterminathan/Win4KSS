@@ -1,4 +1,13 @@
-# Win4KSS
+<p align="center">
+  <img src="assets/icon/banner.png" alt="Win4KSS — true 4K aerial screensaver for Windows" width="720">
+</p>
+
+<p align="center">
+  <a href="https://github.com/exterminathan/Win4KSS/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/exterminathan/Win4KSS?label=release&color=145F6E"></a>
+  <a href="https://github.com/exterminathan/Win4KSS/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/exterminathan/Win4KSS/total?color=145F6E"></a>
+  <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-0A1222">
+  <a href="LICENSE"><img alt="License: GPL-3.0" src="https://img.shields.io/github/license/exterminathan/Win4KSS?color=0A1222"></a>
+</p>
 
 A Windows screen saver that plays real 4K video — Apple TV's Aerial footage, plus roughly
 1,500 more 4K clips from the Internet Archive, NASA, and a few vendor "ambient TV" feeds —
@@ -12,6 +21,20 @@ Apple, NASA, the Internet Archive, or anyone else whose public video it streams.
 streams, and under what licenses — some of the Internet Archive clips are
 non-commercial-only (CC BY-NC-ND), which this document says plainly rather than glossing
 over.
+
+## Features
+
+- **True 4K, not upscaled 1080p** — HEVC/H.265 Main10, hardware-decoded on any GPU from the
+  last several years.
+- **~1,500 browsable clips** from Apple's Aerials CDN, the Internet Archive, NASA, and a few
+  vendor ambient-TV feeds, searchable and filterable by tag in a Wallpaper-Engine-style
+  browser.
+- **Gapless transitions** between clips, with a bounded, resumable local cache so repeat
+  clips play instantly from disk instead of re-streaming.
+- **One-press walk-away hotkey** (`Ctrl+Alt+S`) that triggers the real Windows screen saver
+  — including your lock-on-resume setting, not just a video playing on top.
+- **Built-in auto-updates**, checked from the clip browser and installed with a verified
+  download — no reinstalling by hand for every release.
 
 ## What you need
 
@@ -37,7 +60,7 @@ over.
 
 ## Installing
 
-1. Download `Win4KSS-Setup-<version>.exe` from wherever it was shared with you.
+1. Download `Win4KSS-Setup-<version>.exe` from the [latest release](https://github.com/exterminathan/Win4KSS/releases/latest).
 2. Double-click it. Windows will very likely show a blue **"Windows protected your PC"**
    screen first — that's SmartScreen objecting to an installer with no paid code-signing
    certificate, not a sign anything is wrong. Click **More info**, then **Run anyway**. (More
@@ -56,7 +79,7 @@ over.
 
 ## Using it
 
-### The walk-away hotkey: Ctrl+Alt+S
+### The walk-away hotkey: `Ctrl+Alt+S`
 
 Press it any time you're stepping away and want the screen saver to kick in immediately,
 rather than waiting out your idle timeout. If Windows is set up to require your password (or
@@ -93,7 +116,8 @@ where you pick what the screen saver actually plays:
   - **Start now** — the Desktop/Start Menu shortcut toggles and the hotkey recorder (click
     the box, then press the combination you want; it needs at least one of Ctrl/Alt/Shift
     plus a key).
-  - **About**.
+  - **About** — version info, and an **Updates** section that checks for, downloads, and
+    installs new releases.
 
 ### Making it your actual idle-timeout screen saver
 
