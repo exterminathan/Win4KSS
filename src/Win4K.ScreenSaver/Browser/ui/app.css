@@ -790,6 +790,48 @@ input[type="search"]:focus, input[type="text"]:focus, input[type="number"]:focus
 .about-block { font-size: 12.5px; color: var(--text-dim); line-height: 1.6; }
 .about-block code { color: var(--text); background: var(--panel-alt); padding: 1px 4px; border-radius: 4px; }
 
+/* ---- updates --------------------------------------------------------------------------- */
+
+.update-status:empty { display: none; }
+
+.update-available, .update-ok, .update-error {
+  font-size: 12.5px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  margin: 4px 0 8px;
+  border-left: 3px solid var(--border);
+  background: var(--panel-alt);
+}
+
+.update-available { border-left-color: var(--accent); }
+.update-ok { border-left-color: var(--good); color: var(--text-dim); }
+.update-error { border-left-color: var(--bad); }
+
+.update-notes {
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  max-height: 160px;
+  overflow-y: auto;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.update-progress:empty { display: none; }
+
+.progress-bar {
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--panel-raised);
+  margin: 6px 0 4px;
+}
+
+.progress-fill { height: 100%; background: var(--accent); transition: width .2s ease; }
+
+.progress-label { font-size: 11.5px; color: var(--text-dim); }
+
 /* ---- toast --------------------------------------------------------------------------- */
 
 /* Bottom-right, below the detail pane's video box: a toast over the box would hide the

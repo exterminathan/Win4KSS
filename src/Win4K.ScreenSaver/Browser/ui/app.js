@@ -138,6 +138,10 @@
     cacheStats: null,          // cacheStats message, or null until the first one arrives
     catalogLoaded: false,
 
+    updateStatus: null,        // last updateStatus message, or null until the first check completes
+    updateCheckedManually: false, // true once "Check now" has been clicked this session
+    updateInstallProgress: null,  // last updateInstallProgress message, or null
+
     visible: [],               // keys passing the current filters, sorted
     filters: { search: '', facets: new Map() }, // facetName -> Set<value>
     collapsedFacets: new Set(),
@@ -1356,6 +1360,14 @@
         4K video screen saver for Windows.<br>
         Version <code id="about-version"></code> \u00b7 libmpv API <code id="about-mpv"></code>
       </div>
+      <h3>Updates</h3>
+      ${switchRow('set-autoupdate', 'Check for updates automatically')}
+      <div id="update-status" class="update-status"></div>
+      <div id="update-progress" class="update-progress"></div>
+      <div class="settings-row">
+        <button id="update-check-now" type="button" class="btn">Check now</button>
+        <button id="update-install" type="button" class="btn btn-accent hidden">Install update</button>
+      </div>
       <h3>Files</h3>
       <table class="about-paths">
         <tr><th>Data folder</th><td><code id="about-data"></code></td><td><button type="button" class="btn" data-open="logs">Open</button></td></tr>
@@ -1388,6 +1400,93 @@
     }
     document.getElementById('settings-export').addEventListener('click', () => Bridge.send('exportSettings', {}));
     document.getElementById('settings-import').addEventListener('click', () => Bridge.send('importSettings', {}));
+
+    document.getElementById('set-autoupdate').addEventListener('change', (e) => patchSettings({ autoCheckForUpdates: e.target.checked }, true));
+    document.getElementById('update-check-now').addEventListener('click', () => {
+      Store.updateCheckedManually = true;
+      document.getElementById('update-check-now').disabled = true;
+      Bridge.send('checkUpdates', {});
+    });
+    document.getElementById('update-install').addEventListener('click', async () => {
+      const s = Store.updateStatus;
+      if (!s || !s.available) return;
+      const answer = await confirmDialog(
+        `Install Win4KSS ${esc(s.latest)}? It downloads and verifies the installer, then runs it — ` +
+        'its own prompt (including the Windows UAC prompt) follows from there.',
+        [{ label: 'Install', value: 'yes', accent: true }, { label: 'Cancel', value: 'no' }]);
+      if (answer !== 'yes') return;
+      document.getElementById('update-install').disabled = true;
+      Bridge.send('installUpdate', {});
+    });
+
+    renderUpdateStatus();
+    renderInstallProgress();
+  }
+
+  /** The persistent About-tab banner: nothing shown when up to date, unless the user just clicked "Check now". */
+  function renderUpdateStatus() {
+    const box = document.getElementById('update-status');
+    if (!box) return;
+    const installBtn = document.getElementById('update-install');
+    const checkBtn = document.getElementById('update-check-now');
+    const s = Store.updateStatus;
+
+    if (checkBtn) checkBtn.disabled = false;
+
+    if (!s) {
+      box.innerHTML = '';
+      if (installBtn) installBtn.classList.add('hidden');
+      return;
+    }
+
+    if (s.available) {
+      box.innerHTML =
+        `<div class="update-available"><strong>Win4KSS ${esc(s.latest)}</strong> is available (you have ${esc(s.current)}).` +
+        (s.notes ? `<div class="update-notes">${esc(s.notes)}</div>` : '') + '</div>';
+      if (installBtn) installBtn.classList.remove('hidden');
+      return;
+    }
+
+    if (installBtn) installBtn.classList.add('hidden');
+    if (!Store.updateCheckedManually) {
+      box.innerHTML = ''; // a background check found nothing new -- say nothing
+      return;
+    }
+    box.innerHTML = s.error
+      ? `<div class="update-error">Could not check for updates: ${esc(s.error)}</div>`
+      : `<div class="update-ok">You're up to date (Win4KSS ${esc(s.current)}).</div>`;
+  }
+
+  /** Download/verify/launch progress for an install in flight (updateInstallProgress). */
+  function renderInstallProgress() {
+    const el = document.getElementById('update-progress');
+    if (!el) return;
+    const p = Store.updateInstallProgress;
+    const installBtn = document.getElementById('update-install');
+
+    if (!p) { el.innerHTML = ''; return; }
+
+    if (p.stage === 'Failed') {
+      el.innerHTML = `<div class="update-error">Install failed: ${esc(p.error || 'unknown error')}</div>`;
+      if (installBtn) installBtn.disabled = false;
+      return;
+    }
+
+    if (p.stage === 'Downloading') {
+      const pct = p.fraction == null ? null : Math.round(p.fraction * 100);
+      el.innerHTML = pct == null
+        ? '<div class="progress-label">Downloading…</div>'
+        : `<div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div><div class="progress-label">Downloading… ${pct}%</div>`;
+      return;
+    }
+
+    if (p.stage === 'Done') {
+      el.innerHTML = '<div class="update-ok">Installer launched — Win4KSS will close now.</div>';
+      return;
+    }
+
+    // Verifying, Launching, or any future stage: just name it.
+    el.innerHTML = `<div class="progress-label">${esc(p.stage)}…</div>`;
   }
 
   /** The host validated a settings file; show what importing would change and send the answer. */
@@ -1463,6 +1562,7 @@
       el.value = s.cacheBudgetGb;
       setText('set-budget-readout', `${Math.round(s.cacheBudgetGb)} GB`);
     });
+    setIfIdle('set-autoupdate', (el) => { el.checked = !!s.autoCheckForUpdates; });
     setIfIdle('set-shortcut-desktop', (el) => { el.checked = !!s.shortcutDesktop; });
     setIfIdle('set-shortcut-startmenu', (el) => { el.checked = !!s.shortcutStartMenu; });
     setIfIdle('set-hotkey', (el) => { el.value = formatHotkey(s.hotkey); });
@@ -1490,6 +1590,8 @@
     renderFolderList();
     renderSourceToggles();
     renderCacheUsage();
+    renderUpdateStatus();
+    renderInstallProgress();
   }
 
   function renderCacheUsage() {
@@ -1732,6 +1834,16 @@
     });
 
     Bridge.on('importPreview', (msg) => { showImportPreview(msg); });
+
+    Bridge.on('updateStatus', (msg) => {
+      Store.updateStatus = msg;
+      renderUpdateStatus();
+    });
+
+    Bridge.on('updateInstallProgress', (msg) => {
+      Store.updateInstallProgress = msg;
+      renderInstallProgress();
+    });
 
     Bridge.on('notice', (msg) => showToast(msg.text, { level: msg.level }));
   }
