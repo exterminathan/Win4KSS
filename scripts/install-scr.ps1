@@ -217,7 +217,8 @@ function New-TriggerShortcut {
     $lnk.Arguments        = '/now'
     $lnk.Description      = 'Start the screen saver now (locks on resume if configured)'
     $lnk.WorkingDirectory = Split-Path $Target
-    $lnk.IconLocation     = "$Target,0"
+    $ico = Join-Path (Split-Path $Target) 'win4kss.ico'
+    $lnk.IconLocation     = if (Test-Path -LiteralPath $ico) { "$ico,0" } else { "$Target,0" }
     if (-not [string]::IsNullOrWhiteSpace($HotkeyValue)) { $lnk.Hotkey = $HotkeyValue }
     $lnk.Save()
 

@@ -44,21 +44,37 @@ TODO(review): if this is ever shared more widely than a handful of friends, cons
 currently publish one; it would mean a different build source, or building mpv yourself)
 rather than relying on the GPL source-offer being satisfied informally.
 
+## Preview tool: FFmpeg (GPL build)
+
+The clip browser's stills and hover previews are made by `ffmpeg.exe`, installed in the
+`ffmpeg\` folder of the install directory together with `ffprobe.exe` and the shared FFmpeg
+libraries (`avcodec`, `avformat`, `avfilter`, `avdevice`, `avutil`, `swresample`, `swscale`).
+It is the unmodified **FFmpeg 9.0 "win64-gpl-shared"** build from
+[BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds), fetched by
+`scripts/fetch-ffmpeg.ps1`, and is licensed under the **GNU General Public License, version 3**
+(the build enables GPL components such as libx264). Its own `LICENSE.txt` ships beside it.
+
+- **Corresponding source.** FFmpeg's source is at <https://ffmpeg.org/download.html> (release
+  9.0), and the exact build recipe, including every third-party library version, is the
+  BtbN/FFmpeg-Builds repository. Win4KSS does not modify FFmpeg.
+- **Scope.** Win4KSS runs ffmpeg as a separate program with command-line arguments
+  (`Media/PreviewCommands.cs`); it is not linked into Win4KSS.
+
 ## Microsoft Edge WebView2 Runtime
 
 The clip browser (`/c`) is a [WebView2](https://developer.microsoft.com/microsoft-edge/webview2/)
 page, via the `Microsoft.Web.WebView2` NuGet package. WebView2 itself is a Microsoft
 redistributable component under Microsoft's own license terms, evergreen on the end user's
-machine (see `README.md` for whether that needs a separate install). It is not bundled inside
-Win4KSS's own binaries; Win4KSS only links against the small loader (`WebView2Loader.dll`,
-bundled the same way libmpv is) that talks to whatever runtime is already on the system.
+machine. If it is missing, the installer downloads Microsoft's own Evergreen bootstrapper and
+installs it. Win4KSS only links against the small loader (`WebView2Loader.dll`) that talks to
+the runtime on the system.
 
 ## .NET 10 runtime
 
-Win4KSS is a self-contained-ish single-file .NET 10 publish (see `Win4K.ScreenSaver.csproj`:
-`SelfContained=false` but `PublishSingleFile=true` with native self-extraction — the .NET
-runtime itself is still expected on the machine via Windows' usual .NET delivery, not
-bundled). The .NET runtime and its libraries are MIT-licensed by Microsoft; no action needed.
+Win4KSS is a framework-dependent .NET 10 app (`SelfContained=false`): the .NET 10 Windows
+Desktop Runtime is not bundled. If it is missing, the installer downloads Microsoft's installer
+for it and runs it. The .NET runtime and its libraries are MIT-licensed by Microsoft; no action
+needed.
 
 ## The video content itself
 

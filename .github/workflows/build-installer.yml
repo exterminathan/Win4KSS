@@ -55,6 +55,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./scripts/fetch-libmpv.ps1
 
+      # Same reason: the csproj copies native\ffmpeg\ into the publish only if it already exists.
+      - name: Fetch ffmpeg
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/fetch-ffmpeg.ps1
+
       # Publishes (both the loose multi-file build and the separate System32 one-file .scr),
       # sanity-checks the result, finds or installs Inno Setup, compiles the installer, and
       # (step 6) writes a plain-text .sha256 sidecar of the compiled installer -- the exact same

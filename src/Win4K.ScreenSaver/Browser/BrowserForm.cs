@@ -73,7 +73,7 @@ internal sealed class BrowserForm : Form, IBrowserHost
             _settings = AppSettings.Load();
             _cache = new VideoCache(_settings);
             _queue = new DownloadQueue(_cache);
-            _previews = new MediaPreviewService(_settings, _cache);
+            _previews = new MediaPreviewService(_settings, _cache, new MediaPreviewOptions { RelayRemoteInputs = true });
 
             // Update checks are confined to the clip browser (Program.AllowsUpdateCheck is the
             // single chokepoint for that gate; BrowserForm only ever runs for /c, but this still
@@ -324,7 +324,12 @@ internal sealed class BrowserForm : Form, IBrowserHost
 
     // ---- IBrowserHost: the rest --------------------------------------------------------------
 
-    public bool StartNow() => SaverLauncher.StartNow();
+    /// <summary>Off the UI thread: SaverLauncher waits up to 5 s to see whether Windows started the saver.</summary>
+    public bool StartNow()
+    {
+        _ = Task.Run(SaverLauncher.StartNow);
+        return true;
+    }
 
     public ShortcutOptions ReadShortcuts() => ShortcutManager.ReadOptions();
 

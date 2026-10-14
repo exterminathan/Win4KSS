@@ -27,8 +27,8 @@
          installer's version and the app's own version resource stay the same number.
          TODO(review): bump this and the installer's MyAppVersion together; nothing enforces
          they match besides this comment. -->
-    <Version>1.2.1</Version>
-    <FileVersion>1.2.1.0</FileVersion>
+    <Version>1.2.2</Version>
+    <FileVersion>1.2.2.0</FileVersion>
 
     <!-- PerMonitorV2 lives in app.manifest, not here: WinForms needs it at the Win32 level
          before any window is created, and cdima/aerial's mixed-DPI mis-sizing came from lacking it. -->
@@ -51,6 +51,19 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Win4K.Core\Win4K.Core.csproj" />
+  </ItemGroup>
+
+  <!-- The icon as a file too: shortcuts and the Apps list name it explicitly, so a fresh path
+       sidesteps Windows' icon cache holding a stale entry for the exe. -->
+  <ItemGroup>
+    <Content Include="..\..\assets\icon\win4kss.ico" Link="win4kss.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- ffmpeg for clip-browser previews (fetched by scripts/fetch-ffmpeg.ps1, gitignored). Its own
+       subfolder: its avcodec/avformat DLLs must never sit beside Win4KSS.exe. FfmpegLocator
+       looks in ffmpeg\ beside the exe first. -->
+  <ItemGroup Condition="Exists('..\..\native\ffmpeg\ffmpeg.exe')">
+    <Content Include="..\..\native\ffmpeg\*.exe;..\..\native\ffmpeg\*.dll;..\..\native\ffmpeg\LICENSE.txt" LinkBase="ffmpeg" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
   <!-- Program stays internal — it is an entry point, not API — but the screen saver

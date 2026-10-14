@@ -119,10 +119,13 @@ public sealed class ProcessRunner : IProcessRunner
     }
 }
 
-/// <summary>Finds ffmpeg: the configured path, then C:\ffmpeg (and its bin\), then PATH.</summary>
+/// <summary>Finds ffmpeg: the configured path, the bundled copy, then C:\ffmpeg (and its bin\), then PATH.</summary>
 public static class FfmpegLocator
 {
     public const string DefaultPath = @"C:\ffmpeg\ffmpeg.exe";
+
+    /// <summary>The copy shipped with Win4KSS, in ffmpeg\ beside the exe (scripts/fetch-ffmpeg.ps1).</summary>
+    public static string BundledPath(string exeName = "ffmpeg.exe") => Path.Combine(AppContext.BaseDirectory, "ffmpeg", exeName);
 
     /// <returns>A path that exists, or null when ffmpeg is not installed.</returns>
     public static string? Locate(string? configured)
@@ -135,7 +138,7 @@ public static class FfmpegLocator
             Log.Warn($"Previews: configured ffmpeg '{trimmed}' does not exist; searching the usual places");
         }
 
-        foreach (var candidate in new[] { DefaultPath, @"C:\ffmpeg\bin\ffmpeg.exe" })
+        foreach (var candidate in new[] { BundledPath(), DefaultPath, @"C:\ffmpeg\bin\ffmpeg.exe" })
         {
             if (File.Exists(candidate))
                 return candidate;

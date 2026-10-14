@@ -27,8 +27,12 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
-        // First, before anything P/Invokes: the one-file .scr in System32 has no native DLLs
-        // beside it and has to borrow the user-scope install's. See NativeDependencies.
+        // The one-file .scr in System32 hands everything to the installed exe. See CompanionRelay.
+        if (CompanionRelay.TryRelay(args, out var relayedExit))
+            return relayedExit;
+
+        // Only reached from System32 when the relay could not start the installed copy: borrow
+        // its native DLLs and run here. See NativeDependencies.
         var natives = NativeDependencies.Initialize();
 
         ApplicationConfiguration.Initialize();
@@ -71,7 +75,12 @@ internal static class Program
                     return RunPreview(argument);
 
                 case Verb.FullScreen:
-                    return RunFullScreen();
+                {
+                    var exit = RunFullScreen();
+                    if (args.Contains(SaverLauncher.LockOnExitFlag, StringComparer.OrdinalIgnoreCase))
+                        SaverLauncher.LockAfterDirectRun();
+                    return exit;
+                }
 
                 case Verb.Window:
                     Application.Run(new SaverForm(SaverMode.Window));
@@ -291,19 +300,7 @@ internal static class Program
         }
     }
 
-    private static int StartNow()
-    {
-        // SaverLauncher leaves a breadcrumb so the /s process that Windows is about to launch
-        // knows a human triggered this and gives itself a longer input grace period.
-        if (SaverLauncher.StartNow())
-            return 0;
-
-        // A full-screen exclusive app can swallow the broadcast. Falling back to running
-        // ourselves loses "on resume, display logon screen", so say so in the log rather
-        // than pretending the walk-away lock happened.
-        Log.Warn("StartNow: SC_SCREENSAVE broadcast failed; falling back to /s (no resume lock)");
-        return RunFullScreen();
-    }
+    private static int StartNow() => SaverLauncher.StartNow() ? 0 : 1;
 
     private static int RunPreview(string? handleArgument)
     {

@@ -135,6 +135,25 @@ internal static partial class NativeMethods
     internal static bool StartConfiguredScreenSaver() =>
         PostMessage(HWND_BROADCAST, WM_SYSCOMMAND, SC_SCREENSAVE, IntPtr.Zero);
 
+    private const uint SPI_GETSCREENSAVEACTIVE = 0x0010;
+    private const uint SPI_GETSCREENSAVERRUNNING = 0x0072;
+
+    [LibraryImport("user32.dll", EntryPoint = "SystemParametersInfoW")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool SystemParametersInfo(uint action, uint param, out int value, uint winIni);
+
+    /// <summary>The session's own idea of whether screen savers are enabled — not the registry's, which it caches.</summary>
+    internal static bool IsScreenSaverActive() =>
+        SystemParametersInfo(SPI_GETSCREENSAVEACTIVE, 0, out var on, 0) && on != 0;
+
+    /// <summary>True while Windows considers a screen saver it started to be running.</summary>
+    internal static bool IsScreenSaverRunning() =>
+        SystemParametersInfo(SPI_GETSCREENSAVERRUNNING, 0, out var on, 0) && on != 0;
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool LockWorkStation();
+
     /// <summary>
     /// Clears any display-required lock. mpv asserts one while playing video, which would
     /// otherwise stop the monitor ever sleeping — the screen saver would keep a 4K panel lit

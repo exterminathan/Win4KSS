@@ -12,6 +12,9 @@ public sealed class UpdateInstallerOptions
 
     /// <summary>Actually launches the verified installer. Default: <see cref="Process.Start(ProcessStartInfo)"/> with <c>UseShellExecute = true</c>, so the installer's own UAC prompt follows. A test seam — never replaced in a real run.</summary>
     public Action<string>? Launch { get; init; }
+
+    /// <summary>Where the download is staged. Default: the user's temp folder.</summary>
+    public string? TempDirectory { get; init; }
 }
 
 /// <summary>
@@ -38,12 +41,14 @@ public sealed class UpdateInstaller
     private readonly HttpClient _http;
     private readonly TimeSpan _progressInterval;
     private readonly Action<string> _launch;
+    private readonly string _tempDirectory;
 
     public UpdateInstaller(UpdateInstallerOptions? options = null)
     {
         _http = options?.Http ?? Http.Client;
         _progressInterval = options?.ProgressInterval ?? TimeSpan.FromMilliseconds(200);
         _launch = options?.Launch ?? (path => Process.Start(new ProcessStartInfo(path) { UseShellExecute = true }));
+        _tempDirectory = options?.TempDirectory ?? Path.GetTempPath();
     }
 
     /// <summary>The installer asset: the one whose name ends in .exe and contains "Setup" (see installer/Win4KSS.iss's OutputBaseFilename).</summary>
@@ -99,7 +104,7 @@ public sealed class UpdateInstaller
             return InstallVerifyResult.Fail(InstallVerifyFailure.MissingHashAsset, "Could not fetch the published checksum: " + ex.Message);
         }
 
-        var tempPath = Path.Combine(Path.GetTempPath(), $"win4kss-update-{Guid.NewGuid():N}.exe");
+        var tempPath = Path.Combine(_tempDirectory, $"win4kss-update-{Guid.NewGuid():N}.exe");
         InstallVerifyResult result;
         try
         {

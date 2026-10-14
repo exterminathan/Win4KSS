@@ -11,6 +11,8 @@ installer/output/
 # native/tools holds the bootstrapped 7zr.exe used to unpack it.
 native/mpv/
 native/tools/
+# ffmpeg (previews) is fetched by scripts/fetch-ffmpeg.ps1 — ~180 MB.
+native/ffmpeg/
 
 # Local runtime state (cache, settings, extracted native libs) never lives in the repo,
 # but ignore it here in case anyone points the cache root at the source tree while debugging.

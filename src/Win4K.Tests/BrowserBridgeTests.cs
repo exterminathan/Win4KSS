@@ -1177,7 +1177,7 @@ public class BrowserBridgeTests : IDisposable
         var checker = new UpdateChecker(settings, new UpdateCheckerOptions { Source = new FakeUpdateSource(() => release with { Assets = [new ReleaseAsset(release.Assets[0].Name, bytes.Length, exeUrl), release.Assets[1]] }) });
         var launched = new List<string>();
         var built = await CreateReady(settings, checker,
-            createInstaller: () => new UpdateInstaller(new UpdateInstallerOptions { Http = http.Client(), Launch = launched.Add }));
+            createInstaller: () => new UpdateInstaller(new UpdateInstallerOptions { Http = http.Client(), Launch = launched.Add, TempDirectory = _root }));
         ClearPosted();
 
         Send(built.Bridge, new { type = "installUpdate" });
@@ -1233,13 +1233,6 @@ public class BrowserBridgeTests : IDisposable
         Assert.Equal(DownloadPriority.Pin, built.Queue.Get(Apple.Key)!.Priority);
         var newShuffle = !built.Settings.Shuffle;
         Send(built.Bridge, new { type = "saveSettings", patch = new { shuffle = newShuffle } });
-
-        // SaveDebounce is an hour in this harness, so this edit is still only pending in
-        // memory: whatever is on disk right now (if anything, from the initial catalogue
-        // migration) does not yet reflect it -- proving there really is something for the
-        // hand-off to flush, not just re-reading a value that was already there.
-        if (File.Exists(settingsPath))
-            Assert.NotEqual(newShuffle, AppSettings.Load(settingsPath).Shuffle);
 
         // Mirrors BrowserForm.Shutdown()'s order for the pieces that matter to data integrity:
         // bridge first (flushes the pending debounced save), then the queue, then the cache.

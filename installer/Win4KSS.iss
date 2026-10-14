@@ -79,7 +79,11 @@ InfoBeforeFile=InfoBefore.txt
 ; {#MyAppExeName}, which carries the same icon baked into its own PE resources (Win4K.ScreenSaver.csproj's
 ; ApplicationIcon) -- no separate uninstall icon file needed.
 SetupIconFile=..\assets\icon\win4kss.ico
-UninstallDisplayIcon={app}\{#MyAppExeName}
+; The .ico as a file, not the exe's resource: a fresh path that Windows' icon cache has no stale
+; (icon-less) entry for. ChangesAssociations makes Setup broadcast SHCNE_ASSOCCHANGED at the end,
+; which refreshes the icons Start and search show.
+UninstallDisplayIcon={app}\win4kss.ico
+ChangesAssociations=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -130,6 +134,10 @@ Source: "..\publish\Microsoft.Web.WebView2.WinForms.dll"; DestDir: "{app}"; Flag
 ; alongside the flattened top-level one above -- part of the real publish output, so it ships
 ; too rather than being assumed redundant.
 Source: "..\publish\runtimes\*"; DestDir: "{app}\runtimes"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\publish\win4kss.ico"; DestDir: "{app}"; Flags: ignoreversion
+; ffmpeg for clip-browser previews (scripts/fetch-ffmpeg.ps1), in its own folder so its av*.dll
+; never sit beside Win4KSS.exe. It reads through Win4KSS's loopback relay, never the network.
+Source: "..\publish\ffmpeg\*"; DestDir: "{app}\ffmpeg"; Flags: ignoreversion
 ; TODO(review): .pdb symbol files -- small, and useful if a crash ever needs symbolicating, but
 ; drop these two lines if you'd rather keep {app} to only what can run.
 Source: "..\publish\Win4KSS.pdb"; DestDir: "{app}"; Flags: ignoreversion
@@ -151,8 +159,8 @@ Source: "..\publish\system32\{#MyAppScrName}"; DestDir: "{app}\system32"; Flags:
 ; the companion .exe) being per-user even though Setup itself runs elevated. Opens the clip
 ; browser (/c) -- the bare .exe with no arguments opens a windowed preview instead, which is
 ; not what someone clicking a Start Menu icon would expect.
-Name: "{userprograms}\{#MyAppName}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Parameters: "/c"; WorkingDir: "{app}"; Comment: "Open the Win4KSS clip browser"
-Name: "{userprograms}\{#MyAppName}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
+Name: "{userprograms}\{#MyAppName}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Parameters: "/c"; WorkingDir: "{app}"; IconFilename: "{app}\win4kss.ico"; Comment: "Open the Win4KSS clip browser"
+Name: "{userprograms}\{#MyAppName}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"; IconFilename: "{app}\win4kss.ico"
 
 ; The Desktop/Start Menu "Start Screen Saver.lnk" with its Ctrl+Alt+S hotkey is created by the
 ; install-scr.ps1 [Run] step below, not here -- Inno's [Icons] section has no way to set a
@@ -190,6 +198,8 @@ const
   // ".NET Desktop Runtime" download for whatever Windows/architecture the visitor is on, so this
   // does not go stale across .NET versions the way a direct installer URL would.
   DotNetDownloadUrl = 'https://dotnet.microsoft.com/download/dotnet/10.0';
+  // Microsoft's own always-latest link for the .NET 10 Windows Desktop Runtime installer (x64).
+  DotNetInstallerUrl = 'https://aka.ms/dotnet/10.0/windowsdesktop-runtime-win-x64.exe';
 
 var
   // Set once in InitializeSetup and read everywhere else -- {app} is fixed (DisableDirPage=yes),
@@ -199,6 +209,9 @@ var
   // (NextButtonClick). ImportSettingsIfChosen -- a BeforeInstall callback on the install-scr.ps1
   // [Run] entry below -- imports it if non-empty.
   ImportSettingsFile: String;
+  // Prerequisites this PC lacks, decided in InitializeSetup, installed before any files are copied.
+  NeedDotNet, NeedWebView2, PrerequisitesHandled: Boolean;
+  DownloadPage: TDownloadWizardPage;
 
 function IsWebView2RuntimeInstalled(): Boolean;
 var
@@ -292,41 +305,107 @@ begin
   ExistingInstallDetected := DetectExistingInstall();
   ImportSettingsFile := '';
 
-  // Unlike WebView2 below, this one can block: SelfContained=false means nothing in
-  // {#MyAppName} runs without it, not even the screen saver itself, not a confusing "one
-  // feature doesn't work" moment. Windows 11 does not bundle this either, and Windows Update
-  // does not deliver it the way it eventually does WebView2 -- confirmed needed by hand on a
-  // bare Windows 10 box. Choosing to continue anyway is still allowed: maybe it is about to be
-  // installed by other means, or this is a scripted/offline deployment that handles it
-  // separately.
-  if not IsDotNetDesktopRuntimeInstalled() then
-    if MsgBox(
-      '{#MyAppName} needs the free .NET Desktop Runtime (x64), which this PC does not appear ' +
-      'to have. Without it, nothing in {#MyAppName} will run after installing -- not the clip ' +
-      'browser, not the screen saver itself.' +
-      Chr(13) + Chr(10) + Chr(13) + Chr(10) +
-      'Get it from:' + Chr(13) + Chr(10) + DotNetDownloadUrl +
-      Chr(13) + Chr(10) + Chr(13) + Chr(10) +
-      'Continue installing anyway? Choose No to cancel and install the runtime first.',
-      mbError, MB_YESNO) = IDNO then
+  // Nothing to ask the user: whatever is missing is downloaded from Microsoft and installed
+  // silently once they click Install (InstallPrerequisites). .NET is required -- the app is
+  // SelfContained=false, so without it nothing runs; WebView2 only gates the clip browser.
+  NeedDotNet := not IsDotNetDesktopRuntimeInstalled();
+  NeedWebView2 := not IsWebView2RuntimeInstalled();
+  PrerequisitesHandled := False;
+end;
+
+procedure InitializeWizard();
+begin
+  DownloadPage := CreateDownloadPage(SetupMessage(msgWizardPreparing), SetupMessage(msgPreparingDesc), nil);
+end;
+
+// Downloads one Microsoft installer into {tmp} and runs it silently. Returns '' on success,
+// else a reason. Exit codes 3010 (reboot pending) and 1638 (a newer version is already there)
+// count as success for the .NET installer.
+function DownloadAndRun(const Url, FileName, Params, Title: String): String;
+var
+  ResultCode: Integer;
+  Interactive: Boolean;
+begin
+  Result := '';
+  Interactive := not WizardSilent();
+  try
+    if Interactive then
     begin
-      Result := False;
+      DownloadPage.Clear;
+      DownloadPage.Add(Url, FileName, '');
+      DownloadPage.SetText('Downloading ' + Title + '...', '');
+      DownloadPage.Show;
+      try
+        DownloadPage.Download;
+        DownloadPage.SetText('Installing ' + Title + '...', 'This can take a minute.');
+        DownloadPage.ProgressBar.Style := npbstMarquee;
+      except
+        DownloadPage.Hide;
+        Result := 'Could not download ' + Title + ': ' + GetExceptionMessage;
+        Exit;
+      end;
+    end
+    else
+      DownloadTemporaryFile(Url, FileName, '', nil);
+  except
+    Result := 'Could not download ' + Title + ': ' + GetExceptionMessage;
+    Exit;
+  end;
+
+  try
+    if not Exec(ExpandConstant('{tmp}\' + FileName), Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+      Result := 'Could not start the ' + Title + ' installer: ' + SysErrorMessage(ResultCode)
+    else if (ResultCode <> 0) and (ResultCode <> 3010) and (ResultCode <> 1638) then
+      Result := 'Installing ' + Title + ' failed (exit code ' + IntToStr(ResultCode) + ').';
+  finally
+    if Interactive then
+    begin
+      DownloadPage.ProgressBar.Style := npbstNormal;
+      DownloadPage.Hide;
+    end;
+  end;
+  Log('Prerequisite ' + Title + ': ' + Result);
+end;
+
+// Installs the missing runtimes. Returns '' to carry on, or why Setup must stop (.NET only:
+// without WebView2 the screen saver still works and the clip browser explains itself).
+function InstallPrerequisites(): String;
+var
+  Failure: String;
+begin
+  Result := '';
+  if PrerequisitesHandled then
+    Exit;
+
+  if NeedDotNet then
+  begin
+    // Judged by whether the runtime is there afterwards, not by exit codes alone.
+    Failure := DownloadAndRun(DotNetInstallerUrl, 'windowsdesktop-runtime-win-x64.exe',
+      '/install /quiet /norestart', 'the .NET Desktop Runtime');
+    if not IsDotNetDesktopRuntimeInstalled() then
+    begin
+      if Failure = '' then
+        Failure := 'The .NET Desktop Runtime installer finished but the runtime is still missing.';
+      Result := Failure + Chr(13) + Chr(10) + Chr(13) + Chr(10) +
+        '{#MyAppName} cannot run without it. Check the internet connection and run Setup again, ' +
+        'or install it from ' + DotNetDownloadUrl;
       Exit;
     end;
+  end;
 
-  // Not a blocker: the screen saver itself needs no WebView2 at all, only the clip browser
-  // (/c), and Win4KSS already detects this itself and offers the same download link at that
-  // point. This just saves a confused "why won't /c open" moment later.
-  if not IsWebView2RuntimeInstalled() then
-    MsgBox(
-      'One part of {#MyAppName} -- the clip browser used to choose what plays -- needs the ' +
-      'free Microsoft Edge WebView2 Runtime, which this PC does not appear to have yet.' +
-      Chr(13) + Chr(10) + Chr(13) + Chr(10) +
-      'The screen saver itself will work fine either way. Windows 11 already includes the ' +
-      'runtime, and Windows 10 almost certainly picked it up via Windows Update some time ' +
-      'in the last few years -- but if the clip browser later refuses to open, get it from:' +
-      Chr(13) + Chr(10) + WebView2DownloadUrl,
-      mbInformation, MB_OK);
+  if NeedWebView2 then
+  begin
+    Failure := DownloadAndRun(WebView2DownloadUrl, 'MicrosoftEdgeWebview2Setup.exe',
+      '/silent /install', 'the Microsoft Edge WebView2 Runtime');
+    if Failure = '' then
+      Failure := 'The Microsoft Edge WebView2 Runtime did not install.';
+    if not IsWebView2RuntimeInstalled() then
+      SuppressibleMsgBox(Failure + Chr(13) + Chr(10) + Chr(13) + Chr(10) +
+        'The screen saver will still work. The clip browser needs it; get it from ' + WebView2DownloadUrl,
+        mbInformation, MB_OK, IDOK);
+  end;
+
+  PrerequisitesHandled := True;
 end;
 
 // Builds the extra arguments for the install-scr.ps1 [Run] step above from the Tasks page.
@@ -346,8 +425,24 @@ end;
 // bad pick (or Cancel) is caught before Setup commits to anything -- Result := False keeps the
 // wizard on this page instead of advancing with the task checked but nothing chosen.
 function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  Failure: String;
 begin
   Result := True;
+
+  // Install clicked: fetch and install missing runtimes here, where the download page can show
+  // progress. PrepareToInstall repeats the call for silent runs, which never click anything.
+  if CurPageID = wpReady then
+  begin
+    Failure := InstallPrerequisites();
+    if Failure <> '' then
+    begin
+      MsgBox(Failure, mbCriticalError, MB_OK);
+      Result := False;
+    end;
+    Exit;
+  end;
+
   if CurPageID <> wpSelectTasks then
     Exit;
 
@@ -428,7 +523,10 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   SettingsPath, BackupPath: String;
 begin
-  Result := '';
+  Result := InstallPrerequisites();
+  if Result <> '' then
+    Exit;
+
   if not ExistingInstallDetected then
     Exit;
 

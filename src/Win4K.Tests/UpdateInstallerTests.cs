@@ -10,8 +10,16 @@ namespace Win4K.Tests;
 /// .sha256 release asset (never GitHub's own <c>digest</c>), refusing and cleaning up on any
 /// mismatch, and never actually launching anything unless verification passed.
 /// </summary>
-public class UpdateInstallerTests
+public sealed class UpdateInstallerTests : IDisposable
 {
+    // Per test: a shared temp folder let a parallel test's in-flight download look like a leak.
+    private readonly string _temp = Directory.CreateTempSubdirectory("win4k-update-tests-").FullName;
+
+    public void Dispose()
+    {
+        try { Directory.Delete(_temp, recursive: true); } catch (IOException) { }
+    }
+
     private const string InstallerUrl = "https://example.test/releases/Win4KSS-Setup-1.10.0.exe";
     private const string HashUrl = "https://example.test/releases/Win4KSS-Setup-1.10.0.exe.sha256";
     private const string AssetName = "Win4KSS-Setup-1.10.0.exe";
@@ -38,7 +46,7 @@ public class UpdateInstallerTests
             .Text(HashUrl, $"{Sha256Hex(bytes)}  {AssetName}\n");
 
         var release = ReleaseWith([new ReleaseAsset(AssetName, bytes.Length, InstallerUrl), new ReleaseAsset(AssetName + ".sha256", 90, HashUrl)]);
-        var installer = new UpdateInstaller(new UpdateInstallerOptions { Http = http.Client() });
+        var installer = new UpdateInstaller(new UpdateInstallerOptions { Http = http.Client(), TempDirectory = _temp });
 
         var stages = new List<string>();
         var result = await installer.DownloadAndVerifyAsync(release, stages.Add, onProgress: null, CancellationToken.None);
@@ -61,7 +69,7 @@ public class UpdateInstallerTests
 
         // The API claims a different size than what actually downloads.
         var release = ReleaseWith([new ReleaseAsset(AssetName, bytes.Length + 999, InstallerUrl), new ReleaseAsset(AssetName + ".sha256", 90, HashUrl)]);
-        var installer = new UpdateInstaller(new UpdateInstallerOptions { Http = http.Client() });
+        var installer = new UpdateInstaller(new UpdateInstallerOptions { Http = http.Client(), TempDirectory = _temp });
 
         var before = ExistingTempFiles();
         var result = await installer.DownloadAndVerifyAsync(release, onStage: null, onProgress: null, CancellationToken.None);
@@ -82,7 +90,7 @@ public class UpdateInstallerTests
             .Text(HashUrl, $"{Sha256Hex(Encoding.UTF8.GetBytes("not the right content"))}  {AssetName}\n");
 
         var release = ReleaseWith([new ReleaseAsset(AssetName, bytes.Length, InstallerUrl), new ReleaseAsset(AssetName + ".sha256", 90, HashUrl)]);
-        var installer = new UpdateInstaller(new UpdateInstallerOptions { Http = http.Client() });
+        var installer = new UpdateInstaller(new UpdateInstallerOptions { Http = http.Client(), TempDirectory = _temp });
 
         var before = ExistingTempFiles();
         var result = await installer.DownloadAndVerifyAsync(release, onStage: null, onProgress: null, CancellationToken.None);
@@ -98,7 +106,7 @@ public class UpdateInstallerTests
     {
         var http = new FixtureHttp(); // no routes at all: any request would 404
         var release = ReleaseWith([new ReleaseAsset(AssetName, 12345, InstallerUrl)]); // no .sha256 asset published
-        var installer = new UpdateInstaller(new UpdateInstallerOptions { Http = http.Client() });
+        var installer = new UpdateInstaller(new UpdateInstallerOptions { Http = http.Client(), TempDirectory = _temp });
 
         var result = await installer.DownloadAndVerifyAsync(release, onStage: null, onProgress: null, CancellationToken.None);
 
@@ -135,7 +143,7 @@ public class UpdateInstallerTests
     public void A_verified_result_is_only_ever_launched_after_Ok_never_before()
     {
         var recorder = new LaunchRecorder();
-        var installer = new UpdateInstaller(new UpdateInstallerOptions { Launch = recorder.Launch });
+        var installer = new UpdateInstaller(new UpdateInstallerOptions { Launch = recorder.Launch, TempDirectory = _temp });
 
         installer.LaunchInstaller(@"C:\temp\verified.exe");
 
@@ -166,12 +174,9 @@ public class UpdateInstallerTests
             Assert.Equal(64, hex.Length);
     }
 
-    // Snapshotted before/after, rather than asserting the whole temp dir is empty of this
-    // pattern: other tests in this class (or a parallel test collection) may have their own
-    // win4kss-update-*.exe in flight at the same moment.
-    private static HashSet<string> ExistingTempFiles() =>
-        Directory.GetFiles(Path.GetTempPath(), "win4kss-update-*.exe").ToHashSet();
+    private HashSet<string> ExistingTempFiles() =>
+        Directory.GetFiles(_temp, "win4kss-update-*.exe").ToHashSet();
 
-    private static void AssertNoNewTempFiles(HashSet<string> before) =>
+    private void AssertNoNewTempFiles(HashSet<string> before) =>
         Assert.Empty(ExistingTempFiles().Except(before));
 }

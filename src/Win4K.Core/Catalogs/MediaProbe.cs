@@ -31,7 +31,7 @@ public sealed class FfprobeMediaProbe(string ffprobePath) : IMediaProbe
 
     public static string? Locate()
     {
-        string[] fixedPaths = [@"C:\ffmpeg\ffprobe.exe", @"C:\ffmpeg\bin\ffprobe.exe"];
+        string[] fixedPaths = [Media.FfmpegLocator.BundledPath("ffprobe.exe"), @"C:\ffmpeg\ffprobe.exe", @"C:\ffmpeg\bin\ffprobe.exe"];
         foreach (var candidate in fixedPaths)
         {
             if (File.Exists(candidate))

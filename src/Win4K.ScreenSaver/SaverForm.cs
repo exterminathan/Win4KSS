@@ -35,6 +35,14 @@ public sealed class SaverForm : Form
     private System.Windows.Forms.Timer? _previewWatch;
     private bool _previewClosing;
 
+    private Label? _status;
+    private System.Windows.Forms.Timer? _statusWatch;
+    private DateTime _playbackRequestedUtc;
+    private volatile bool _anyClipPlayed;
+
+    /// <summary>How long with nothing on screen before the saver says why, instead of staying black.</summary>
+    private static readonly TimeSpan NothingPlayingNotice = TimeSpan.FromSeconds(15);
+
     /// <param name="shouldCache">
     /// Only one window per session should populate the cache — otherwise a three-monitor
     /// setup downloads three copies of every clip. The /s path passes true for the primary
@@ -125,6 +133,7 @@ public sealed class SaverForm : Form
 
         // Clips benched twice in a session are counted toward "unhealthy" in settings.json.
         _playlist.ClipFailedForSession += (_, clip) => ClipHealth.Shared.RecordSessionFailure(clip);
+        _playlist.ClipStarted += (_, _) => _anyClipPlayed = true;
 
         if (settings.CacheEnabled)
         {
@@ -199,6 +208,9 @@ public sealed class SaverForm : Form
             _dismiss.Dismissed += (_, _) => BeginInvoke(Close);
         }
 
+        if (_playlist is not null)
+            StartStatusWatch();
+
         // Clips may not have been supplied (window mode resolves them itself).
         if (_showVideo && _clips is null && _playlist is not null)
         {
@@ -232,6 +244,57 @@ public sealed class SaverForm : Form
                 Log.Error("Playback: could not resolve any clips", ex);
                 ShowFatal("No videos available. Check your connection or add a local folder in settings.");
             }
+        }
+    }
+
+    // ---- "nothing is playing" notice ----------------------------------------------------
+
+    private void StartStatusWatch()
+    {
+        _playbackRequestedUtc = DateTime.UtcNow;
+        _statusWatch = new System.Windows.Forms.Timer { Interval = 1000 };
+        _statusWatch.Tick += (_, _) => UpdateStatus();
+        _statusWatch.Start();
+    }
+
+    /// <summary>
+    /// The playlist retries forever, but with no network and nothing cached that is an endless
+    /// black screen nobody can explain. Say so until a clip plays.
+    /// </summary>
+    private void UpdateStatus()
+    {
+        var playlist = _playlist;
+        if (playlist is null)
+            return;
+
+        var failing = playlist.ConsecutiveFailures >= PlaylistEngine.ConsecutiveFailureLimit;
+        var silent = !_anyClipPlayed && DateTime.UtcNow - _playbackRequestedUtc >= NothingPlayingNotice;
+        var show = failing || silent;
+
+        if (show && _status is null)
+        {
+            Log.Warn("Saver: nothing has played; showing the connection notice");
+            _status = new Label
+            {
+                Text = "Can't load any videos right now — retrying.\n\n" +
+                       "Check the internet connection, or that a firewall isn't blocking Win4KSS.\n" +
+                       "Clips marked \"Keep offline\" in the clip browser play without a connection.",
+                ForeColor = Color.FromArgb(150, 150, 150),
+                BackColor = Color.Black,
+                AutoSize = false,
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleCenter,
+                Font = new Font(Font.FontFamily, 13f),
+            };
+            Controls.Add(_status);
+            _status.BringToFront();
+        }
+        else if (!failing && _anyClipPlayed && _status is not null)
+        {
+            Log.Info("Saver: playback recovered; hiding the connection notice");
+            Controls.Remove(_status);
+            _status.Dispose();
+            _status = null;
         }
     }
 
@@ -352,6 +415,7 @@ public sealed class SaverForm : Form
             _cache?.Dispose();
             _dismiss?.Dispose();
             _previewWatch?.Dispose();
+            _statusWatch?.Dispose();
             _playlist?.Dispose();
             _player?.Dispose();
             _shutdown.Dispose();

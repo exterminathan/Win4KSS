@@ -52,11 +52,10 @@ over.
   playback looks choppy on an older machine, installing the free **"HEVC Video Extensions
   from Device Manufacturer"** app from the Microsoft Store is worth trying, though Win4KSS
   does its own decoding and doesn't strictly depend on it.
-- **The Microsoft Edge WebView2 Runtime**, but only for the clip browser (the window where
-  you pick what plays) — the screen saver itself doesn't need it. Windows 11 already
-  includes it. Windows 10 almost certainly does too by now, since Microsoft has been quietly
-  delivering it via Windows Update for a few years. If it's genuinely missing, Win4KSS
-  notices and offers to open the download page for you.
+
+Nothing else to install by hand. If the PC lacks the **.NET 10 Desktop Runtime** or the
+**Microsoft Edge WebView2 Runtime**, the installer downloads them from Microsoft and installs
+them for you. **ffmpeg**, which makes the clip browser's previews, ships with Win4KSS.
 
 ## Installing
 

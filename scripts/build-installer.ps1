@@ -79,6 +79,15 @@ else {
     Write-Host "libmpv-2.dll present ($mpvSizeMb MB)." -ForegroundColor Green
 }
 
+# ffmpeg for previews: also a build-time input (the csproj only copies native\ffmpeg\ if present).
+$ffmpegPath = Join-Path $repoRoot 'native\ffmpeg\ffmpeg.exe'
+if (-not (Test-Path -LiteralPath $ffmpegPath)) {
+    & (Join-Path $PSScriptRoot 'fetch-ffmpeg.ps1')
+    if (-not (Test-Path -LiteralPath $ffmpegPath)) {
+        throw "fetch-ffmpeg.ps1 ran but $ffmpegPath still doesn't exist."
+    }
+}
+
 # ---- 2. publish -------------------------------------------------------------------------
 
 if (-not $SkipPublish) {
@@ -110,7 +119,8 @@ else {
 $expectedFiles = @(
     'Win4KSS.exe', 'Win4KSS.scr', 'Win4KSS.dll', 'Win4KSS.deps.json', 'Win4KSS.runtimeconfig.json',
     'Win4K.Core.dll', 'libmpv-2.dll', 'WebView2Loader.dll',
-    'Microsoft.Web.WebView2.Core.dll', 'Microsoft.Web.WebView2.WinForms.dll'
+    'Microsoft.Web.WebView2.Core.dll', 'Microsoft.Web.WebView2.WinForms.dll',
+    'win4kss.ico', 'ffmpeg\ffmpeg.exe', 'ffmpeg\ffprobe.exe', 'ffmpeg\avcodec-63.dll', 'ffmpeg\avformat-63.dll'
 )
 foreach ($name in $expectedFiles) {
     $p = Join-Path $publishDir $name

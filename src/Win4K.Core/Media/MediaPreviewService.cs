@@ -68,6 +68,14 @@ public sealed class MediaPreviewOptions
     public Func<string?>? CaFile { get; init; }
 
     /// <summary>
+    /// Hand ffmpeg a 127.0.0.1 URL served by <see cref="LoopbackRelay"/> instead of the remote
+    /// one, so ffmpeg itself never goes to the network: the bundled build's TLS cannot verify
+    /// Apple's CDN, and a per-app firewall has never been asked about ffmpeg.exe. The clip
+    /// browser turns this on; tests leave it off and see the remote URL.
+    /// </summary>
+    public bool RelayRemoteInputs { get; init; }
+
+    /// <summary>
     /// A local file to read a clip's video from, or null to go to the network. Defaults to the
     /// clip's own path for folder clips, else any rendition already in the video cache (SDR first).
     /// </summary>
@@ -112,6 +120,7 @@ public sealed class MediaPreviewService : IDisposable
     private readonly IProcessRunner _runner;
     private readonly TimeProvider _time;
     private readonly Func<string?> _caFile;
+    private readonly LoopbackRelay? _relay;
     private readonly Func<ClipInfo, string?> _inputFileFor;
     private readonly string? _ffmpeg;
     private readonly string _indexPath;
@@ -145,6 +154,17 @@ public sealed class MediaPreviewService : IDisposable
         _runner = _options.Runner ?? new ProcessRunner();
         _time = _options.Time ?? TimeProvider.System;
         _caFile = _options.CaFile ?? (() => CaBundle.Ensure());
+        if (_options.RelayRemoteInputs)
+        {
+            try
+            {
+                _relay = new LoopbackRelay(_http);
+            }
+            catch (Exception ex)
+            {
+                Log.Warn($"Previews: could not start the loopback relay ({ex.Message}); ffmpeg will fetch directly");
+            }
+        }
         _inputFileFor = _options.InputFileFor ?? (clip => DefaultInputFile(clip, cache));
         _ffmpeg = _options.FfmpegPath ?? (_options.AutoDetectFfmpeg ? FfmpegLocator.Locate(settings.FfmpegPath) : null);
         Capabilities = new PreviewCapabilities(_ffmpeg is not null, _ffmpeg);
@@ -407,6 +427,7 @@ public sealed class MediaPreviewService : IDisposable
         {
             Log.Error("Previews: stop failed", ex);
         }
+        _relay?.Dispose();
         _saveTimer.Dispose();
         _indexLock.Dispose();
         _signal.Dispose();
@@ -715,9 +736,16 @@ public sealed class MediaPreviewService : IDisposable
 
         var seek = PreviewCommands.SeekSeconds(job.Clip.DurationSeconds);
         return await RunAttemptsAsync(job, input, seek, ".jpg",
-            (src, output, ss) => PreviewCommands.StillFromVideo(src, output, ss, PreviewCommands.IsRemote(src) ? _caFile() : null),
+            (src, output, ss) => PreviewCommands.StillFromVideo(Input(src), output, ss, CaFileFor(src)),
             ct).ConfigureAwait(false);
     }
+
+    /// <summary>What ffmpeg is actually given to read: remote URLs go through the relay when there is one.</summary>
+    private string Input(string src) =>
+        _relay is not null && PreviewCommands.IsRemote(src) ? _relay.UrlFor(src) : src;
+
+    private string? CaFileFor(string src) =>
+        _relay is null && PreviewCommands.IsRemote(src) ? _caFile() : null;
 
     private async Task<PreviewItem> MakeHoverAsync(Job job, CancellationToken ct)
     {
@@ -730,7 +758,7 @@ public sealed class MediaPreviewService : IDisposable
 
         var seek = PreviewCommands.SeekSeconds(job.Clip.DurationSeconds);
         return await RunAttemptsAsync(job, input, seek, ".mp4",
-            (src, output, ss) => PreviewCommands.Hover(src, output, ss, PreviewCommands.IsRemote(src) ? _caFile() : null),
+            (src, output, ss) => PreviewCommands.Hover(Input(src), output, ss, CaFileFor(src)),
             ct).ConfigureAwait(false);
     }
 

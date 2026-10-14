@@ -108,7 +108,8 @@ public static class ShortcutManager
             Set(type, shortcut, "Arguments", arguments ?? "");
             Set(type, shortcut, "Description", "Start the screen saver now (locks on resume if configured)");
             Set(type, shortcut, "WorkingDirectory", Path.GetDirectoryName(target) ?? "");
-            Set(type, shortcut, "IconLocation", target + ",0");
+            var icon = Path.Combine(Path.GetDirectoryName(target) ?? "", "win4kss.ico");
+            Set(type, shortcut, "IconLocation", (File.Exists(icon) ? icon : target) + ",0");
 
             if (!string.IsNullOrWhiteSpace(hotkey))
                 Set(type, shortcut, "Hotkey", hotkey);
