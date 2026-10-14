@@ -59,19 +59,52 @@ public static class ShortcutManager
     }
 
     /// <summary>
+    /// True when this assembly was published single-file (the old packaging:
+    /// PublishSingleFile + IncludeNativeLibrariesForSelfExtract). A single-file host has no
+    /// on-disk assembly file of its own to report, so <see cref="Assembly.Location"/> comes
+    /// back empty for code running out of it. The normal case now is a loose multi-file
+    /// publish — Win4KSS.exe sitting next to Win4K.Core.dll, libmpv-2.dll,
+    /// WebView2Loader.dll, etc. — for which Location is the real path on disk.
+    /// </summary>
+    public static bool IsSingleFileBuild => string.IsNullOrEmpty(typeof(ShortcutManager).Assembly.Location);
+
+    /// <summary>
     /// Makes sure a companion .exe exists for shortcuts to target, copying the running image
     /// if necessary. Lets the settings dialog create a working hotkey even when the app was
     /// started from the installed .scr and the install script was never run.
     /// </summary>
-    public static bool EnsureCompanionExe()
+    public static bool EnsureCompanionExe() => EnsureCompanionExe(CompanionExePath);
+
+    /// <summary>
+    /// Testable core of <see cref="EnsureCompanionExe()"/>, taking the destination explicitly
+    /// so tests can point it at a throwaway path instead of the real
+    /// %LOCALAPPDATA%\Programs\Win4KSS.
+    /// </summary>
+    internal static bool EnsureCompanionExe(string destination)
     {
         try
         {
+            if (!IsSingleFileBuild)
+            {
+                // Loose multi-file publish: Environment.ProcessPath is just Win4KSS.exe, and
+                // it needs Win4K.Core.dll, libmpv-2.dll, WebView2Loader.dll etc. sitting right
+                // beside it to run at all. Copying only the exe here would produce a companion
+                // that looks right but cannot start — silently broken. Only install-scr.ps1 /
+                // the installer, which copy the whole publish output together, may create this
+                // companion now; this just reports whether they already have.
+                if (File.Exists(destination))
+                    return true;
+
+                Log.Warn($"Shortcut: no companion exe at {destination}, and this build is not " +
+                         "single-file, so one cannot be made by copying the running exe alone " +
+                         "(it would be missing its sibling DLLs). Run scripts/install-scr.ps1 " +
+                         "or the installer to create a working companion.");
+                return false;
+            }
+
             var source = Environment.ProcessPath;
             if (source is null || !File.Exists(source))
-                return File.Exists(CompanionExePath);
-
-            var destination = CompanionExePath;
+                return File.Exists(destination);
 
             if (string.Equals(source, destination, StringComparison.OrdinalIgnoreCase))
                 return true;
