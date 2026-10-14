@@ -325,9 +325,9 @@ internal sealed class BrowserForm : Form, IBrowserHost
     // ---- IBrowserHost: the rest --------------------------------------------------------------
 
     /// <summary>Off the UI thread: SaverLauncher waits up to 5 s to see whether Windows started the saver.</summary>
-    public bool StartNow()
+    public bool StartNow(string? startWithKey)
     {
-        _ = Task.Run(SaverLauncher.StartNow);
+        _ = Task.Run(() => SaverLauncher.StartNow(startWithKey));
         return true;
     }
 

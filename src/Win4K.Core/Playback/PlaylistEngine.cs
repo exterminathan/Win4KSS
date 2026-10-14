@@ -176,11 +176,17 @@ public sealed class PlaylistEngine : IDisposable
 
     // ---- control ------------------------------------------------------------------------
 
-    public void Start(IReadOnlyList<Clip> clips, AppSettings? settings = null, Random? random = null)
+    /// <param name="first">Played first, whether or not it is in <paramref name="clips"/> ("Play now"); the rotation follows.</param>
+    public void Start(IReadOnlyList<Clip> clips, AppSettings? settings = null, Random? random = null, Clip? first = null)
     {
         settings ??= new AppSettings();
 
         var ordered = BuildOrder(clips, settings, DateTime.Now, random);
+        if (first is not null)
+        {
+            ordered.RemoveAll(c => c.Id == first.Id);
+            ordered.Insert(0, first);
+        }
         var after = new List<Action>();
 
         lock (_gate)

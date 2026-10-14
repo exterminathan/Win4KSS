@@ -777,6 +777,18 @@ public class BrowserBridgeTests : IDisposable
     }
 
     [Fact]
+    public async Task Play_now_passes_the_clip_to_the_host_and_an_unknown_clip_falls_back_to_the_rotation()
+    {
+        var built = await CreateReady();
+
+        Send(built.Bridge, new { type = "startNow", key = Apple.Key });
+        Send(built.Bridge, new { type = "startNow", key = "apple:NOT-IN-THE-CATALOGUE" });
+        Send(built.Bridge, new { type = "startNow" });
+
+        Assert.Equal([Apple.Key, null, null], _host.StartNowKeys);
+    }
+
+    [Fact]
     public async Task Folder_messages_use_the_host_dialogs()
     {
         var built = await CreateReady();
@@ -1330,15 +1342,17 @@ public class BrowserBridgeTests : IDisposable
         public List<string> Opened { get; } = [];
         public ShortcutOptions Shortcuts { get; set; } = new(false, false, ShortcutManager.DefaultHotkey);
         public int StartNowCalls { get; private set; }
+        public List<string?> StartNowKeys { get; } = [];
         public bool StartNowResult { get; set; } = true;
         public string? PickResult { get; set; }
 
         public void ShowClip(Clip? clip, string? playUrl) => Shown.Add((clip, playUrl));
         public void SetPanelRect(PanelRect rect) => Rects.Add(rect);
 
-        public bool StartNow()
+        public bool StartNow(string? startWithKey)
         {
             StartNowCalls++;
+            StartNowKeys.Add(startWithKey);
             return StartNowResult;
         }
 

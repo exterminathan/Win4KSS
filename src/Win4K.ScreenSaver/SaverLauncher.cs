@@ -19,17 +19,21 @@ internal static class SaverLauncher
     private static readonly TimeSpan SystemStartTimeout = TimeSpan.FromSeconds(5);
 
     /// <summary>Blocks up to <see cref="SystemStartTimeout"/>; call it off the UI thread.</summary>
+    /// <param name="startWithKey">A clip to play first (the browser's "Play now"); null for the rotation.</param>
     /// <returns>False only if no saver could be started at all.</returns>
-    public static bool StartNow()
+    public static bool StartNow(string? startWithKey = null)
     {
-        // The /s process about to start reads this to give itself the longer input grace.
-        LaunchContext.MarkManualLaunch();
+        // The /s process about to start reads this for the longer input grace, and the clip to open with.
+        LaunchContext.MarkManualLaunch(startWithKey);
 
         if (NativeMethods.IsScreenSaverRunning())
         {
             Log.Info("StartNow: a screen saver is already running");
             return true;
         }
+
+        if (startWithKey is not null)
+            Log.Info($"StartNow: playing {startWithKey} first");
 
         if (IsOursTheSystemSaver())
         {

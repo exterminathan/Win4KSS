@@ -1031,6 +1031,10 @@
     });
 
     document.getElementById('start-now').addEventListener('click', () => Bridge.send('startNow', {}));
+    // "Play now": the screen saver opens with the clip in the detail pane, then the rotation.
+    document.getElementById('detail-play-now').addEventListener('click', () => {
+      if (Store.detailKey !== null) Bridge.send('startNow', { key: Store.detailKey });
+    });
     document.getElementById('open-settings').addEventListener('click', openSettings);
   }
 

@@ -58,7 +58,10 @@ $fetchLibmpv   = Join-Path $PSScriptRoot 'fetch-libmpv.ps1'
 
 if (-not $Version) {
     $csprojXml = [xml](Get-Content -LiteralPath $csprojPath -Raw)
-    $Version = ($csprojXml.Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1)
+    # SelectSingleNode, not .PropertyGroup.Version: under strict mode the latter throws as soon as
+    # any PropertyGroup lacks a <Version> element.
+    $Version = $csprojXml.SelectNodes('/Project/PropertyGroup/Version') | ForEach-Object { $_.InnerText.Trim() } |
+        Where-Object { $_ } | Select-Object -First 1
     if (-not $Version) {
         throw "Could not read <Version> from $csprojPath. Pass -Version explicitly."
     }

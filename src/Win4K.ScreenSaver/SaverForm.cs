@@ -237,7 +237,16 @@ public sealed class SaverForm : Form
                     : $"Rotation: empty, falling back to {selection.Fallback.ToString().ToLowerInvariant()} " +
                       $"({selection.Clips.Count} clips)");
 
-                _playlist.Start(selection.Clips, settings);
+                // "Play now" from the clip browser: that clip opens, in rotation or not.
+                Clip? first = null;
+                if (LaunchContext.StartWithKey is { } startWith &&
+                    catalogue.FirstOrDefault(c => c.Key == startWith) is { } info)
+                {
+                    first = ClipResolver.PlayableClip(info, settings.Quality);
+                    Log.Info(first is null ? $"Saver: {startWith} has no playable rendition" : $"Saver: starting with {first}");
+                }
+
+                _playlist.Start(selection.Clips, settings, first: first);
             }
             catch (Exception ex)
             {

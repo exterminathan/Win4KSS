@@ -301,10 +301,19 @@ public sealed class BrowserBridge : IDisposable
                 break;
 
             case "startNow":
+            {
                 FlushSave(); // the saver about to start reads settings.json
-                if (!_host.StartNow())
+                // "Play now" names a clip; one the catalogue does not know is ignored, not refused.
+                var startWith = Str(m, "key");
+                if (startWith is not null && !_byKey.ContainsKey(startWith))
+                {
+                    Log.Warn($"Browser: startNow for unknown clip {startWith}; starting the rotation instead");
+                    startWith = null;
+                }
+                if (!_host.StartNow(startWith))
                     Notice("warning", "Windows did not accept the request to start the screen saver.");
                 break;
+            }
 
             case "purgeCache":
                 Background = PurgeCacheAsync();

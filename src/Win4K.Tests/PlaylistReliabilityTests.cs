@@ -422,6 +422,26 @@ public class PlaylistReliabilityTests : IDisposable
     }
 
     [Fact]
+    public void Play_now_opens_with_the_chosen_clip_even_outside_the_rotation()
+    {
+        _engine.Start(Clips("a", "b", "c"), InOrder, first: Make("z"));
+        _mpv.Pump();
+
+        Assert.Equal(UrlOf("z"), _mpv.Loads[0].Url);
+        Assert.Equal(["z", "a", "b", "c"], _engine.Order.Select(c => c.Id));
+    }
+
+    [Fact]
+    public void Play_now_moves_a_clip_already_in_rotation_to_the_front_without_repeating_it()
+    {
+        _engine.Start(Clips("a", "b", "c"), InOrder, first: Make("c"));
+        _mpv.Pump();
+
+        Assert.Equal(UrlOf("c"), _mpv.Loads[0].Url);
+        Assert.Equal(["c", "a", "b"], _engine.Order.Select(c => c.Id));
+    }
+
+    [Fact]
     public void A_success_resets_the_consecutive_failure_count()
     {
         _engine.IsAvailableOffline = c => c.Id == "z";

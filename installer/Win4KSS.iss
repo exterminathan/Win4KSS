@@ -54,20 +54,15 @@ DefaultDirName={localappdata}\Programs\{#MyAppName}
 DisableDirPage=yes
 DisableProgramGroupPage=yes
 
-; Writing the System32 copy (for the Screen Saver Settings dropdown) and HKLM-adjacent registry
-; lookups needs admin; HKCU and %LOCALAPPDATA% writes happen under the same elevated-but-same-
-; user session, which Inno resolves back to the invoking user's profile as usual.
-PrivilegesRequired=admin
+; Per-user: everything Setup writes is under %LOCALAPPDATA% and HKCU, so installing and
+; updating never ask for admin. The two things that do need it ask for themselves, and only
+; when needed: install-scr.ps1 elevates just the System32 copy (for the Screen Saver Settings
+; dropdown), and only when the relay there is missing or a different relay version; the .NET
+; runtime installer is run elevated only when the runtime is missing. Before 1.2.5 Setup ran as
+; admin and registered its uninstall entry in HKLM; see GetInstallScrArgs for that migration.
+PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-; Inno otherwise warns that mixing an admin install with per-user areas (localappdata,
-; userprograms) is suspicious. It is deliberate here, the same way install-scr.ps1's own
-; self-elevation is: this is a single-user machine being elevated via UAC as the SAME user,
-; not an admin installing for other users, so %LOCALAPPDATA%\Programs\Win4KSS and HKCU are
-; exactly where the one person running Setup wants things -- Windows resolves those
-; constants back to the invoking user's profile even while elevated, which is what makes
-; this work at all.
-UsedUserAreasWarning=no
 
 OutputDir=output
 OutputBaseFilename=Win4KSS-Setup-{#MyAppVersion}
@@ -156,7 +151,7 @@ Source: "..\publish\system32\{#MyAppScrName}"; DestDir: "{app}\system32"; Flags:
 
 [Icons]
 ; Per-user Start Menu entries, to match everything else this app touches (settings, cache,
-; the companion .exe) being per-user even though Setup itself runs elevated. Opens the clip
+; the companion .exe) being per-user, like Setup itself. Opens the clip
 ; browser (/c) -- the bare .exe with no arguments opens a windowed preview instead, which is
 ; not what someone clicking a Start Menu icon would expect.
 Name: "{userprograms}\{#MyAppName}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Parameters: "/c"; WorkingDir: "{app}"; IconFilename: "{app}\win4kss.ico"; Comment: "Open the Win4KSS clip browser"
@@ -203,6 +198,8 @@ const
   DotNetDownloadUrl = 'https://dotnet.microsoft.com/download/dotnet/10.0';
   // Microsoft's own always-latest link for the .NET 10 Windows Desktop Runtime installer (x64).
   DotNetInstallerUrl = 'https://aka.ms/dotnet/10.0/windowsdesktop-runtime-win-x64.exe';
+  // Where an admin-mode (pre-1.2.5) install registered itself for Apps & Features.
+  MachineUninstallKey = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{FDEAF37E-5817-43BA-A346-B9BB300B9B46}_is1';
 
 var
   // Set once in InitializeSetup and read everywhere else -- {app} is fixed (DisableDirPage=yes),
@@ -324,7 +321,7 @@ end;
 // Downloads one Microsoft installer into {tmp} and runs it silently. Returns '' on success,
 // else a reason. Exit codes 3010 (reboot pending) and 1638 (a newer version is already there)
 // count as success for the .NET installer.
-function DownloadAndRun(const Url, FileName, Params, Title: String): String;
+function DownloadAndRun(const Url, FileName, Params, Title: String; Elevate: Boolean): String;
 var
   ResultCode: Integer;
   Interactive: Boolean;
@@ -356,7 +353,14 @@ begin
   end;
 
   try
-    if not Exec(ExpandConstant('{tmp}\' + FileName), Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    // Setup itself is not elevated, so a machine-wide runtime asks for admin just for itself.
+    // Its outcome is judged afterwards by whether the runtime is actually there.
+    if Elevate then
+    begin
+      if not ShellExec('runas', ExpandConstant('{tmp}\' + FileName), Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+        Result := 'Could not start the ' + Title + ' installer: ' + SysErrorMessage(ResultCode);
+    end
+    else if not Exec(ExpandConstant('{tmp}\' + FileName), Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
       Result := 'Could not start the ' + Title + ' installer: ' + SysErrorMessage(ResultCode)
     else if (ResultCode <> 0) and (ResultCode <> 3010) and (ResultCode <> 1638) then
       Result := 'Installing ' + Title + ' failed (exit code ' + IntToStr(ResultCode) + ').';
@@ -384,7 +388,7 @@ begin
   begin
     // Judged by whether the runtime is there afterwards, not by exit codes alone.
     Failure := DownloadAndRun(DotNetInstallerUrl, 'windowsdesktop-runtime-win-x64.exe',
-      '/install /quiet /norestart', 'the .NET Desktop Runtime');
+      '/install /quiet /norestart', 'the .NET Desktop Runtime', True);
     if not IsDotNetDesktopRuntimeInstalled() then
     begin
       if Failure = '' then
@@ -399,7 +403,7 @@ begin
   if NeedWebView2 then
   begin
     Failure := DownloadAndRun(WebView2DownloadUrl, 'MicrosoftEdgeWebview2Setup.exe',
-      '/silent /install', 'the Microsoft Edge WebView2 Runtime');
+      '/silent /install', 'the Microsoft Edge WebView2 Runtime', False);
     if Failure = '' then
       Failure := 'The Microsoft Edge WebView2 Runtime did not install.';
     if not IsWebView2RuntimeInstalled() then
@@ -421,6 +425,11 @@ begin
     Args := Args + ' -UserScope';
   if WizardIsTaskSelected('setdefault') then
     Args := Args + ' -SetAsDefault -TimeoutMinutes 10';
+  // An admin-mode install from before 1.2.5 left its Apps & Features entry in HKLM; this
+  // per-user Setup writes its own to HKCU. Removing the old one needs admin, so it rides on
+  // install-scr.ps1's one System32 prompt instead of asking separately.
+  if RegKeyExists(HKLM64, MachineUninstallKey) or RegKeyExists(HKLM32, MachineUninstallKey) then
+    Args := Args + ' -RemoveMachineUninstallEntry';
   Result := Trim(Args);
 end;
 

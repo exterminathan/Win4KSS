@@ -64,13 +64,15 @@ them for you. **ffmpeg**, which makes the clip browser's previews, ships with Wi
    screen first — that's SmartScreen objecting to an installer with no paid code-signing
    certificate, not a sign anything is wrong. Click **More info**, then **Run anyway**. (More
    detail in [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) if you want it.)
-3. Approve the "Do you want to allow this app to make changes" prompt. Installing needs
-   administrator rights because it registers the screen saver with Windows.
-4. On the Tasks page, leave **"Make Win4KSS available in Windows' Screen Saver Settings"**
+3. On the Tasks page, leave **"Make Win4KSS available in Windows' Screen Saver Settings"**
    ticked unless you have a reason not to — it's what makes Win4KSS show up as a normal
    choice in Windows' own screen saver picker later. The second option, setting it as your
    active screen saver right now with a 10-minute idle timeout, is unticked by default; tick
    it if you want that set up immediately instead of doing it yourself afterward.
+4. Windows asks **"Do you want to allow this app to make changes"** once, to add Win4KSS to
+   that screen saver list (and, on a PC that lacks it, to install the .NET runtime). Win4KSS
+   itself installs into your user folder and needs no admin rights; if you say no, everything
+   works except the entry in Windows' list.
 5. Finish. You'll end up with:
    - A **"Start Screen Saver"** shortcut on your Desktop and in the Start Menu, bound to
      **Ctrl+Alt+S**.
@@ -116,7 +118,8 @@ where you pick what the screen saver actually plays:
     the box, then press the combination you want; it needs at least one of Ctrl/Alt/Shift
     plus a key).
   - **About** — version info, and an **Updates** section that checks for, downloads, and
-    installs new releases.
+    installs new releases. Updates install quietly — no installer pages and no Windows
+    permission prompt — and the clip browser reopens on the new version.
 
 ### Making it your actual idle-timeout screen saver
 

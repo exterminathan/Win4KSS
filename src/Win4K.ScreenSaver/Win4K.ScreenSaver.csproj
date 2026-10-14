@@ -27,8 +27,8 @@
          installer's version and the app's own version resource stay the same number.
          TODO(review): bump this and the installer's MyAppVersion together; nothing enforces
          they match besides this comment. -->
-    <Version>1.2.4</Version>
-    <FileVersion>1.2.4.0</FileVersion>
+    <Version>1.2.5</Version>
+    <FileVersion>1.2.5.0</FileVersion>
 
     <!-- PerMonitorV2 lives in app.manifest, not here: WinForms needs it at the Win32 level
          before any window is created, and cdima/aerial's mixed-DPI mis-sizing came from lacking it. -->
@@ -112,6 +112,14 @@
        obj\system32 and bin\system32 (in Core too, as the properties flow to the reference) so it
        never invalidates the normal build's outputs, and it publishes to a staging folder from
        which only the bundle is copied - the loose natives it also emits never reach system32\. -->
+  <!-- The System32 copy only relays to the installed exe (CompanionRelay), so updates leave it
+       alone: install-scr.ps1 copies it into System32 (the one step that needs admin) only when
+       the installed copy's product version differs from "relay-N". Bump this only when the relay's
+       behaviour has to reach existing System32 copies; every bump costs users one UAC prompt. -->
+  <PropertyGroup>
+    <Win4KRelayVersion>1</Win4KRelayVersion>
+  </PropertyGroup>
+
   <Target Name="PublishSystem32Scr" AfterTargets="Publish"
           Condition="'$(Win4KSystem32Build)' != 'true' and '$(PublishSingleFile)' != 'true'">
     <PropertyGroup>
@@ -121,7 +129,7 @@
 
     <RemoveDir Directories="$(_System32Staging)" />
     <MSBuild Projects="$(MSBuildProjectFullPath)" Targets="Publish"
-             Properties="Configuration=$(Configuration);Win4KSystem32Build=true;PublishSingleFile=true;IncludeNativeLibrariesForSelfExtract=false;IncludeAllContentForSelfExtract=false;IntermediateOutputPath=obj\system32\$(Configuration)\;OutputPath=bin\system32\$(Configuration)\;PublishDir=$(_System32Staging)" />
+             Properties="Configuration=$(Configuration);Win4KSystem32Build=true;InformationalVersion=relay-$(Win4KRelayVersion);IncludeSourceRevisionInInformationalVersion=false;PublishSingleFile=true;IncludeNativeLibrariesForSelfExtract=false;IncludeAllContentForSelfExtract=false;IntermediateOutputPath=obj\system32\$(Configuration)\;OutputPath=bin\system32\$(Configuration)\;PublishDir=$(_System32Staging)" />
 
     <RemoveDir Directories="$(_System32Dir)" />
     <Copy SourceFiles="$(_System32Staging)$(AssemblyName).exe" DestinationFiles="$(_System32Dir)$(AssemblyName).scr" />

@@ -17,7 +17,8 @@ public interface IBrowserHost
     void SetPanelRect(PanelRect rect);
 
     /// <summary>Asks Windows to start the configured saver (<see cref="SaverLauncher.StartNow"/>). False if refused.</summary>
-    bool StartNow();
+    /// <param name="startWithKey">A clip to play first ("Play now"); null for the rotation as usual.</param>
+    bool StartNow(string? startWithKey);
 
     ShortcutOptions ReadShortcuts();
 

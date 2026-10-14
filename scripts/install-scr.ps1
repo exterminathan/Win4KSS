@@ -53,6 +53,23 @@
     Remove the System32 .scr (if present), the user-scope companion dir, and the shortcuts
     (and any leftover Win4KAerial install).
 
+.PARAMETER RemoveMachineUninstallEntry
+    Also delete the Apps & Features entry an older, machine-wide (admin) Inno install left in
+    HKLM, now that the installer is per-user. Done in the same elevated step as the System32
+    copy, so a migrating user sees one prompt.
+
+.PARAMETER SkipShortcuts
+    Leave the Desktop / Start Menu shortcuts alone. For sandboxed test runs only.
+
+ELEVATION
+    Nothing here runs elevated as a whole any more. Everything except System32 lives under
+    %LOCALAPPDATA% and HKCU. The System32 relay is copied by a separate elevated child of this
+    script (-System32Step), and only when the installed copy is missing or carries a different
+    relay version (Win4K.ScreenSaver.csproj's Win4KRelayVersion, stamped into its product
+    version) -- so an ordinary update never asks for admin. Declining the prompt is not fatal:
+    the install falls back to a .scr in the companion dir, which Windows runs just the same;
+    only the Screen Saver Settings dropdown entry is missing until the next install.
+
 .EXAMPLE
     .\scripts\install-scr.ps1 -UserScope          # no elevation needed
     .\scripts\install-scr.ps1 -SetAsDefault -TimeoutMinutes 5
@@ -66,8 +83,16 @@ param(
     [int]$TimeoutMinutes = 10,
     [string]$Hotkey = 'CTRL+ALT+S',
     [switch]$UserScope,
-    [switch]$Uninstall
+    [switch]$Uninstall,
+    [switch]$RemoveMachineUninstallEntry,
+    [switch]$SkipShortcuts,
+    # Internal: the elevated children this script starts for the System32 work.
+    [switch]$System32Step,
+    [switch]$RemoveSystem32Step,
+    [string]$System32Dir
 )
+
+if ($System32Dir) { $env:WIN4K_SYSTEM32_DIR = $System32Dir }
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -77,7 +102,8 @@ if (-not $PublishDir) { $PublishDir = Join-Path $repoRoot 'publish' }
 $publishDir = $PublishDir
 $appName    = 'Win4KSS'
 $scrName    = "$appName.scr"
-$system32   = Join-Path $env:SystemRoot 'System32'
+# WIN4K_SYSTEM32_DIR: a test seam, so a sandboxed run never writes the real System32.
+$system32   = if ($env:WIN4K_SYSTEM32_DIR) { $env:WIN4K_SYSTEM32_DIR } else { Join-Path $env:SystemRoot 'System32' }
 $installed  = Join-Path $system32 $scrName
 $shortcut   = 'Start Screen Saver.lnk'
 
@@ -188,24 +214,81 @@ function Test-Admin {
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-function Assert-Admin {
-    # User-scope installs write only under %LOCALAPPDATA% and HKCU, so they never elevate.
-    if ($UserScope) { return }
-    if (Test-Admin) { return }
+$machineUninstallKeys = @(
+    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{FDEAF37E-5817-43BA-A346-B9BB300B9B46}_is1',
+    'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\{FDEAF37E-5817-43BA-A346-B9BB300B9B46}_is1'
+)
 
-    # Writing to System32 needs elevation, and there is no way to ask for it mid-script,
-    # so relaunch with the same arguments rather than failing halfway through.
-    Write-Host 'Elevation is required to write to System32. Relaunching...' -ForegroundColor Yellow
+function Invoke-Elevated {
+    # Runs this script again, elevated, for one System32 step. Returns whether it succeeded.
+    # A declined UAC prompt throws from Start-Process; that is a normal answer, not an error.
+    param([string[]]$StepArgs)
 
-    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
-    if ($SkipBuild)      { $argList += '-SkipBuild' }
-    if ($PSBoundParameters.ContainsKey('PublishDir')) { $argList += '-PublishDir'; $argList += "`"$PublishDir`"" }
-    if ($SetAsDefault)   { $argList += '-SetAsDefault'; $argList += "-TimeoutMinutes"; $argList += $TimeoutMinutes }
-    if ($Uninstall)      { $argList += '-Uninstall' }
-    if ($Hotkey -ne 'CTRL+ALT+S') { $argList += '-Hotkey'; $argList += "`"$Hotkey`"" }
+    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"",
+                 '-PublishDir', "`"$publishDir`"") + $StepArgs
+    # An elevated process gets a fresh environment, so a sandbox override must ride along.
+    if ($env:WIN4K_SYSTEM32_DIR) { $argList += @('-System32Dir', "`"$env:WIN4K_SYSTEM32_DIR`"") }
+    try {
+        $p = Start-Process -FilePath 'powershell.exe' -ArgumentList $argList -Verb RunAs -Wait -PassThru -WindowStyle Hidden
+        return ($p.ExitCode -eq 0)
+    } catch {
+        Write-Warning "Administrator permission was not given ($($_.Exception.Message))."
+        return $false
+    }
+}
 
-    Start-Process -FilePath 'powershell.exe' -ArgumentList $argList -Verb RunAs -Wait
-    exit 0
+function Get-ProductVersion {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    return (Get-Item -LiteralPath $Path).VersionInfo.ProductVersion
+}
+
+function Test-System32RelayCurrent {
+    # The relay is only replaced when its relay version changes, never per release.
+    param([string]$Stub, [string]$Target)
+    $want = Get-ProductVersion $Stub
+    $have = Get-ProductVersion $Target
+    return ($null -ne $want) -and ($want -eq $have)
+}
+
+function Test-AccessDenied {
+    param($ErrorRecord)
+    $e = $ErrorRecord.Exception
+    while ($e) {
+        if ($e -is [System.UnauthorizedAccessException]) { return $true }
+        $e = $e.InnerException
+    }
+    return $false
+}
+
+function Copy-System32Relay {
+    # Tries without elevation first (a sandboxed SystemRoot, or an already-elevated shell), and
+    # only asks for admin when System32 actually refuses the write.
+    param([string]$Stub, [string]$Target, [bool]$AlsoRemoveMachineEntry)
+
+    if (-not $AlsoRemoveMachineEntry -or (Test-Admin)) {
+        try {
+            Copy-Item -LiteralPath $Stub -Destination $Target -Force -ErrorAction Stop
+            if ($AlsoRemoveMachineEntry) { Remove-MachineUninstallEntry }
+            return $true
+        } catch {
+            if (-not (Test-AccessDenied $_)) { throw }
+        }
+    }
+
+    Write-Host '  asking for permission to add Win4KSS to the Screen Saver Settings list...' -ForegroundColor Cyan
+    $step = @('-System32Step')
+    if ($AlsoRemoveMachineEntry) { $step += '-RemoveMachineUninstallEntry' }
+    return (Invoke-Elevated $step) -and (Test-System32RelayCurrent -Stub $Stub -Target $Target)
+}
+
+function Remove-MachineUninstallEntry {
+    foreach ($key in $machineUninstallKeys) {
+        if (Test-Path -LiteralPath $key) {
+            Remove-Item -LiteralPath $key -Recurse -Force
+            Write-Host "  removed the old machine-wide uninstall entry: $key" -ForegroundColor Green
+        }
+    }
 }
 
 function New-TriggerShortcut {
@@ -335,6 +418,25 @@ function Stop-NonSaverInstances {
     if ($procs.Count -gt 0) { Start-Sleep -Milliseconds 300 }
 }
 
+# ---- elevated children ------------------------------------------------------------------
+
+$system32Target = Join-Path $system32 $scrName
+$system32Stub   = Join-Path (Join-Path $publishDir 'system32') $scrName
+
+if ($System32Step) {
+    Copy-Item -LiteralPath $system32Stub -Destination $system32Target -Force
+    if (Test-Path -LiteralPath $legacySystemScr) { Remove-FileTolerant $legacySystemScr }
+    if ($RemoveMachineUninstallEntry) { Remove-MachineUninstallEntry }
+    exit 0
+}
+
+if ($RemoveSystem32Step) {
+    foreach ($path in @($system32Target, $legacySystemScr)) {
+        if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+    }
+    exit 0
+}
+
 # ---- uninstall --------------------------------------------------------------------------
 
 function Restore-ScreenSaverRegistration {
@@ -346,9 +448,16 @@ function Restore-ScreenSaverRegistration {
     $current = (Get-ItemProperty -Path $desktopKey -Name 'SCRNSAVE.EXE' -ErrorAction SilentlyContinue).'SCRNSAVE.EXE'
     if ([string]::IsNullOrWhiteSpace($current)) { return }
 
-    $leaf = Split-Path -Leaf ($current.Trim().Trim('"'))
+    $value = $current.Trim().Trim('"')
+    $leaf = Split-Path -Leaf $value
     $isOurs = ($leaf -ieq $scrName) -or ($leaf -imatch '^WIN4KS~\d+\.SCR$') -or (Test-LegacyScreenSaverPath $current)
     if (-not $isOurs) { return }
+
+    # And in a folder this install owns: a sandboxed run (WIN4K_SYSTEM32_DIR, a temp
+    # LOCALAPPDATA) must never reset the real machine's screen saver.
+    $dir = Split-Path -Parent $value
+    $ourDirs = @($system32, $companionDir, $legacyDir) | ForEach-Object { [IO.Path]::GetFullPath($_).TrimEnd('\') }
+    if ($ourDirs -inotcontains [IO.Path]::GetFullPath($dir).TrimEnd('\')) { return }
 
     $stock = Join-Path $system32 'scrnsave.scr'
     if (Test-Path $stock) {
@@ -362,8 +471,6 @@ function Restore-ScreenSaverRegistration {
 }
 
 if ($Uninstall) {
-    Assert-Admin
-
     # Guard against the same wedge the install path guards against: deleting the .scr out
     # from under an actively-running /s instance leaves Windows believing one is still
     # running (SPI_GETSCREENSAVERRUNNING stuck true) until sign-out. /p, /c and /now
@@ -372,14 +479,28 @@ if ($Uninstall) {
 
     Restore-ScreenSaverRegistration
 
-    if (Test-Path $installed) {
-        Remove-Item $installed -Force
-        Write-Host "Removed $installed" -ForegroundColor Green
-    } else {
-        Write-Host "Not installed at $installed" -ForegroundColor Yellow
+    # The only part of an uninstall that needs admin, and only if a System32 copy exists.
+    if ((Test-Path -LiteralPath $system32Target) -or (Test-Path -LiteralPath $legacySystemScr)) {
+        $removed = $true
+        foreach ($path in @($system32Target, $legacySystemScr)) {
+            if (-not (Test-Path -LiteralPath $path)) { continue }
+            try {
+                Remove-Item -LiteralPath $path -Force -ErrorAction Stop
+            } catch {
+                if (-not (Test-AccessDenied $_)) { throw }
+                $removed = $false
+            }
+        }
+        if (-not $removed) { $removed = Invoke-Elevated @('-RemoveSystem32Step') }
+        if (-not $removed -or (Test-Path -LiteralPath $system32Target)) {
+            Write-Warning "$system32Target remains; remove it from an administrator prompt."
+        } else {
+            Write-Host "Removed $system32Target" -ForegroundColor Green
+        }
     }
 
-    foreach ($dir in @([Environment]::GetFolderPath('DesktopDirectory'), [Environment]::GetFolderPath('Programs'))) {
+    $shortcutDirs = if ($SkipShortcuts) { @() } else { @([Environment]::GetFolderPath('DesktopDirectory'), [Environment]::GetFolderPath('Programs')) }
+    foreach ($dir in $shortcutDirs) {
         $path = Join-Path $dir $shortcut
         if (Test-Path $path) {
             Remove-Item $path -Force
@@ -428,46 +549,53 @@ if (-not $SkipBuild) {
 # WebView2 app on the machine; putting our copy on System32's DLL search path, where any
 # process can find it, was rejected for exactly that reason. Either way $companionDir gets the
 # full loose build (below, unconditional) -- the System32 .scr is dead without it.
-$source = if ($UserScope) { Join-Path $publishDir $scrName } else { Join-Path (Join-Path $publishDir 'system32') $scrName }
-if (-not (Test-Path $source)) {
-    throw "$source not found. Run without -SkipBuild."
+$looseScr = Join-Path $publishDir $scrName
+if (-not (Test-Path -LiteralPath $looseScr)) {
+    throw "$looseScr not found. Run without -SkipBuild."
+}
+if (-not $UserScope -and -not (Test-Path -LiteralPath $system32Stub)) {
+    throw "$system32Stub not found. Run without -SkipBuild."
 }
 
 # ---- install ----------------------------------------------------------------------------
 
-Assert-Admin
-
-# Sums the whole publish folder, not just $source -- for a loose multi-file publish, the .scr
-# itself is a ~150 KB apphost; the real size is libmpv-2.dll and friends sitting beside it.
+# Sums the whole publish folder: the .scr itself is a ~150 KB apphost; the real size is
+# libmpv-2.dll and friends sitting beside it.
 $sizeMb = [math]::Round(((Get-ChildItem -LiteralPath $publishDir -Recurse -File | Measure-Object -Property Length -Sum).Sum) / 1MB, 1)
-$where = if ($UserScope) { 'the user profile' } else { 'System32' }
-Write-Host "Installing $appName ($sizeMb MB) to $where..." -ForegroundColor Cyan
+Write-Host "Installing $appName ($sizeMb MB)..." -ForegroundColor Cyan
 
 Stop-NonSaverInstances
 
-New-Item -ItemType Directory -Force -Path (Split-Path $installed) | Out-Null
-
-# -PublishDir can legitimately point at $installed's own folder already (the Inno Setup
-# installer extracts straight into the user-scope companion dir and passes that same path
-# back in as -PublishDir), in which case $source and $installed are the same file.
-# Copy-Item throws "Cannot overwrite the item ... with itself" if asked to copy a file onto
-# its own path, so treat that as already-installed rather than as a copy to perform.
-$sourceFull = (Resolve-Path -LiteralPath $source).Path
-$installedFull = if (Test-Path -LiteralPath $installed) { (Resolve-Path -LiteralPath $installed).Path } else { $null }
-if ($installedFull -and $sourceFull -ieq $installedFull) {
-    Write-Host "  already in place: $installed" -ForegroundColor Green
-} else {
-    Copy-Item $source $installed -Force
-    Write-Host "  installed: $installed" -ForegroundColor Green
-}
-
-# A stray $companionDir\Win4KSS.scr left over from an earlier -UserScope install (where it WAS
-# $installed) has nothing pointing at it once System32 mode takes over -- SCRNSAVE.EXE now
-# points at the System32 copy instead -- but it would otherwise just sit there, still
-# hard-linked to the companion exe until that gets overwritten below, going stale across
-# upgrades and inviting a "which .scr is this" confusion. Harmless, but cheap to clean up.
+# The .scr Windows runs. System32 when the relay there is (or can be made) current; otherwise
+# a copy of the loose build's .scr beside the companion exe, which Windows runs just the same.
+$companionScr = Join-Path $companionDir $scrName
+$useSystem32 = $false
 if (-not $UserScope) {
-    Remove-FileTolerant (Join-Path $companionDir $scrName)
+    if ((Test-System32RelayCurrent -Stub $system32Stub -Target $system32Target) -and -not $RemoveMachineUninstallEntry) {
+        Write-Host "  System32 relay already current: $system32Target" -ForegroundColor Green
+        $useSystem32 = $true
+    } elseif (Copy-System32Relay -Stub $system32Stub -Target $system32Target -AlsoRemoveMachineEntry $RemoveMachineUninstallEntry.IsPresent) {
+        Write-Host "  installed: $system32Target" -ForegroundColor Green
+        $useSystem32 = $true
+    } elseif (Test-Path -LiteralPath $system32Target) {
+        # An older copy is still there and still forwards to the companion exe; keep using it.
+        Write-Warning "Could not update $system32Target; the existing copy keeps working."
+        $useSystem32 = $true
+    } else {
+        Write-Warning 'Win4KSS will not appear in the Screen Saver Settings list until a later install is allowed to add it. Everything else works.'
+    }
+}
+$installed = if ($useSystem32) { $system32Target } else { $companionScr }
+
+New-Item -ItemType Directory -Force -Path $companionDir | Out-Null
+if ($useSystem32) {
+    # A companion-dir .scr from a user-scope install has nothing pointing at it any more.
+    Remove-FileTolerant $companionScr
+} else {
+    $looseFull = (Resolve-Path -LiteralPath $looseScr).Path
+    $companionScrFull = if (Test-Path -LiteralPath $companionScr) { (Resolve-Path -LiteralPath $companionScr).Path } else { $null }
+    if ($companionScrFull -ine $looseFull) { Copy-Item -LiteralPath $looseScr -Destination $companionScr -Force }
+    Write-Host "  installed: $companionScr" -ForegroundColor Green
 }
 
 # Unconditional, regardless of install scope: the companion .exe is what every shortcut
@@ -503,7 +631,7 @@ if ($companionIsSourceExe) {
     # from $sourceExe there instead -- it is small, so losing the free-link optimisation for
     # that one case costs nothing.
     $linked = $false
-    if ($UserScope -and [IO.Path]::GetPathRoot($companionExe) -eq [IO.Path]::GetPathRoot($installed)) {
+    if (-not $useSystem32 -and [IO.Path]::GetPathRoot($companionExe) -eq [IO.Path]::GetPathRoot($installed)) {
         try {
             New-Item -ItemType HardLink -Path $companionExe -Target $installed -ErrorAction Stop | Out-Null
             $linked = $true
@@ -518,14 +646,16 @@ if ($companionIsSourceExe) {
 
 # ---- shortcuts --------------------------------------------------------------------------
 
-Write-Host 'Creating shortcuts...' -ForegroundColor Cyan
+if (-not $SkipShortcuts) {
+    Write-Host 'Creating shortcuts...' -ForegroundColor Cyan
 
-# Explorer only binds a .lnk hotkey for shortcuts under the Desktop or the Start Menu,
-# so both are created rather than picking one. Both target the companion .exe.
-New-TriggerShortcut -Path (Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) $shortcut) `
-                    -Target $companionExe -HotkeyValue $Hotkey
-New-TriggerShortcut -Path (Join-Path ([Environment]::GetFolderPath('Programs')) $shortcut) `
-                    -Target $companionExe -HotkeyValue $Hotkey
+    # Explorer only binds a .lnk hotkey for shortcuts under the Desktop or the Start Menu,
+    # so both are created rather than picking one. Both target the companion .exe.
+    New-TriggerShortcut -Path (Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) $shortcut) `
+                        -Target $companionExe -HotkeyValue $Hotkey
+    New-TriggerShortcut -Path (Join-Path ([Environment]::GetFolderPath('Programs')) $shortcut) `
+                        -Target $companionExe -HotkeyValue $Hotkey
+}
 
 # ---- optionally activate ------------------------------------------------------------------
 
