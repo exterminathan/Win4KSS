@@ -4,6 +4,7 @@ using Win4K.Core;
 using Win4K.Core.Caching;
 using Win4K.Core.Media;
 using Win4K.Core.Playback;
+using Win4K.Core.Updates;
 
 namespace Win4K.ScreenSaver.Browser;
 
@@ -74,9 +75,15 @@ internal sealed class BrowserForm : Form, IBrowserHost
             _queue = new DownloadQueue(_cache);
             _previews = new MediaPreviewService(_settings, _cache);
 
+            // Update checks are confined to the clip browser (Program.AllowsUpdateCheck is the
+            // single chokepoint for that gate; BrowserForm only ever runs for /c, but this still
+            // asks rather than assuming it). Never constructed for /s, /p, /now or /w.
+            var updateChecker = Program.AllowsUpdateCheck(Program.Verb.Configure) ? new UpdateChecker(_settings) : null;
+
             _bridge = new BrowserBridge(_settings, _cache, _queue, _previews, this, PostToPage, new BrowserBridgeOptions
             {
                 Dispatch = RunOnUiThread,
+                UpdateChecker = updateChecker,
             });
 
             // Takes pin ownership (its mutex) unless the saver already has it.
@@ -357,6 +364,18 @@ internal sealed class BrowserForm : Form, IBrowserHost
         {
             Log.Error($"Browser: could not open {path}", ex);
         }
+    }
+
+    /// <summary>
+    /// See <see cref="IBrowserHost.PrepareForInstallerHandoff"/>: closing the window runs
+    /// <see cref="Shutdown"/> through the ordinary <see cref="FormClosing"/> path, which already
+    /// does exactly what the hand-off needs (flush settings, dispose the queue/cache/previews,
+    /// close the WebView2) — before the installer's own [Run] step can reach this process.
+    /// </summary>
+    public void PrepareForInstallerHandoff()
+    {
+        Log.Info("Browser: install launched; closing before the installer's own cleanup step runs");
+        Close();
     }
 
     // ---- single instance & shutdown ----------------------------------------------------------

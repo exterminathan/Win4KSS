@@ -4,6 +4,9 @@ using Win4K.Core.Caching;
 using Win4K.Core.Catalogs;
 using Win4K.Core.Media;
 using Win4K.Core.Playback;
+using Win4K.Core.Updates;
+// Win4K.Core.Caching already has its own DownloadProgress (cache downloads); alias the update one.
+using UpdateDownloadProgress = Win4K.Core.Updates.DownloadProgress;
 
 namespace Win4K.ScreenSaver.Browser;
 
@@ -40,6 +43,15 @@ public sealed class BrowserBridgeOptions
 
     /// <summary>Start <see cref="MediaPreviewService"/> with background fill once the catalogue is in.</summary>
     public bool PreviewBackgroundFill { get; init; } = true;
+
+    /// <summary>
+    /// Null (the default) means this bridge never checks for updates at all — no automatic
+    /// check on open, and <c>checkUpdates</c>/<c>installUpdate</c> page messages are answered
+    /// with a notice rather than doing anything. Only <see cref="BrowserForm"/> ever supplies
+    /// one, gated by <c>Program.AllowsUpdateCheck</c> — see CLAUDE.md "Never during the saver".
+    /// Tests that do not care about updates get this behaviour for free by leaving it null.
+    /// </summary>
+    public UpdateChecker? UpdateChecker { get; init; }
 }
 
 /// <summary>
@@ -80,6 +92,7 @@ public sealed class BrowserBridge : IDisposable
     private readonly Action<AppSettings> _save;
     private readonly Func<AppSettings, CancellationToken, Task<IReadOnlyList<ClipInfo>>> _loadCatalog;
     private readonly Func<IProgress<CatalogRefreshProgress>, CancellationToken, Task<CatalogRefreshReport>> _refresh;
+    private readonly UpdateChecker? _updateChecker;
     private readonly TimeProvider _time;
     private readonly BrowserBridgeOptions _options;
     private readonly CancellationTokenSource _shutdown = new();
@@ -97,6 +110,10 @@ public sealed class BrowserBridge : IDisposable
     private string? _selectedKey;
     private ShortcutOptions? _shortcuts;
     private PortableSettings? _pendingImport;
+    private UpdateCheckResult? _lastUpdateStatus;
+    private ReleaseInfo? _lastRelease;
+    private Task<UpdateCheckOutcome>? _updateCheckInFlight;
+    private bool _installing;
 
     private readonly Dictionary<string, ClipStateDto> _sent = new(StringComparer.Ordinal);
     private readonly HashSet<string> _dirty = new(StringComparer.Ordinal);
@@ -127,6 +144,7 @@ public sealed class BrowserBridge : IDisposable
         _save = _options.Save ?? (s => SaveMerged(s));
         _loadCatalog = _options.LoadCatalog ?? ((s, ct) => ClipLibrary.LoadAsync(s, ct));
         _refresh = _options.RefreshCatalogs ?? ((p, ct) => new CatalogRefresher().RefreshAsync(null, p, ct));
+        _updateChecker = _options.UpdateChecker;
         _time = _options.Time ?? TimeProvider.System;
 
         // PinManager saves after every change; route that through the debounce like every other edit.
@@ -170,6 +188,12 @@ public sealed class BrowserBridge : IDisposable
             Log.Info("Browser: catalogues are over 7 days old; refreshing in the background");
             Background = RefreshCatalogsAsync();
         }
+
+        // Never for /s, /p, /now or /w: _updateChecker is only ever non-null here when
+        // BrowserForm constructed one, which it only does for the clip browser. The toggle
+        // (default on) governs this automatic path only; a manual "Check now" bypasses it.
+        if (_updateChecker is not null && _settings.AutoCheckForUpdates)
+            _ = CheckForUpdatesAsync(force: false);
     }
 
     /// <summary>The page is navigating away (reload, crash). Nothing is posted until its next <c>ready</c>.</summary>
@@ -309,6 +333,14 @@ public sealed class BrowserBridge : IDisposable
                 PageLog(Str(m, "level"), Str(m, "text"));
                 break;
 
+            case "checkUpdates":
+                Background = CheckForUpdatesAsync(force: true);
+                break;
+
+            case "installUpdate":
+                Background = InstallUpdateAsync();
+                break;
+
             default:
                 Log.Warn($"Browser: unknown page message '{type}' ignored");
                 break;
@@ -327,6 +359,11 @@ public sealed class BrowserBridge : IDisposable
             SendCatalogAndFullState(); // ends with cacheStats
         else
             PostCacheStats();
+
+        // A reload (or the page simply arriving after an automatic check already finished):
+        // replay the last result rather than leaving the About tab blank until the next one.
+        if (_lastUpdateStatus is { } status)
+            Post(UpdateStatusMessage.From(status));
     }
 
     private void SetRotation(IReadOnlyList<string> keys, bool value)
@@ -682,6 +719,137 @@ public sealed class BrowserBridge : IDisposable
         Notice(notes.Count > 0 ? "warning" : "info", text2);
     }
 
+    // ---- updates -------------------------------------------------------------------------------
+
+    private static string AppVersionString() => typeof(BrowserBridge).Assembly.GetName().Version?.ToString() ?? "";
+
+    /// <summary>
+    /// Runs one update check (<see cref="_updateChecker"/>'s own 24h throttle applies unless
+    /// <paramref name="force"/>), persists the outcome into <see cref="AppSettings"/>, and posts
+    /// <c>updateStatus</c>. Concurrent callers (an automatic check still running when the user
+    /// clicks "Check now") share the one in-flight task rather than racing two network calls.
+    /// Never throws except for the bridge's own shutdown cancellation.
+    /// </summary>
+    private Task<UpdateCheckOutcome> CheckForUpdatesAsync(bool force)
+    {
+        if (_updateCheckInFlight is { IsCompleted: false } running)
+            return running;
+
+        var task = RunUpdateCheckAsync(force);
+        _updateCheckInFlight = task;
+        return task;
+    }
+
+    private async Task<UpdateCheckOutcome> RunUpdateCheckAsync(bool force)
+    {
+        try
+        {
+            var outcome = await _updateChecker!.CheckAsync(AppVersionString(), force, _shutdown.Token).ConfigureAwait(false);
+            await RunOnBridgeThread(() =>
+            {
+                _lastUpdateStatus = outcome.Result;
+                // Only replace a previously-known release with a fresh one; a throttled check
+                // (Release null) must not blank out an install an earlier check already set up.
+                if (outcome.Release is not null)
+                    _lastRelease = outcome.Release;
+                ScheduleSave(); // persists LastUpdateCheckUtc/LatestVersion/Available/Notes
+                Post(UpdateStatusMessage.From(outcome.Result));
+            }).ConfigureAwait(false);
+            return outcome;
+        }
+        finally
+        {
+            _updateCheckInFlight = null;
+        }
+    }
+
+    /// <summary>
+    /// <c>installUpdate</c>: refreshes the check if nothing live has been fetched yet this
+    /// session, then downloads, verifies, and — only on success — launches the installer and
+    /// starts the hand-off shutdown (<see cref="IBrowserHost.PrepareForInstallerHandoff"/>).
+    /// Never launches anything that did not verify. A second <c>installUpdate</c> while one is
+    /// already running is ignored rather than racing two downloads to the same temp area.
+    /// </summary>
+    private async Task InstallUpdateAsync()
+    {
+        if (_updateChecker is null)
+        {
+            Marshal(() => Notice("error", "Updates are not available in this build."));
+            return;
+        }
+
+        if (_installing)
+            return;
+        _installing = true;
+
+        try
+        {
+            if (_lastRelease is null)
+                await CheckForUpdatesAsync(force: true).ConfigureAwait(false);
+
+            var release = _lastRelease;
+            if (release is null || _lastUpdateStatus is not { Available: true })
+            {
+                Marshal(() => Notice("warning", "No update is available to install."));
+                return;
+            }
+
+            var installer = new UpdateInstaller();
+            var progress = new Progress<UpdateDownloadProgress>(p =>
+                Marshal(() => Post(UpdateInstallProgressMessage.Downloading(p))));
+
+            var result = await installer.DownloadAndVerifyAsync(
+                release,
+                onStage: stage => Marshal(() => Post(UpdateInstallProgressMessage.ForStage(stage))),
+                onProgress: progress,
+                cancellationToken: _shutdown.Token).ConfigureAwait(false);
+
+            await RunOnBridgeThread(() =>
+            {
+                if (!result.Ok)
+                {
+                    var message = result.Message ?? "The update could not be verified and will not be installed.";
+                    Log.Warn($"Browser: update install refused: {result.Failure} — {message}");
+                    Post(UpdateInstallProgressMessage.Failed(message));
+                    Notice("error", message);
+                    return;
+                }
+
+                try
+                {
+                    Post(UpdateInstallProgressMessage.ForStage("Launching"));
+                    installer.LaunchInstaller(result.FilePath!);
+                    Post(UpdateInstallProgressMessage.ForStage("Done"));
+                }
+                catch (Exception ex)
+                {
+                    Log.Error("Browser: could not launch the downloaded installer", ex);
+                    Post(UpdateInstallProgressMessage.Failed("Could not start the installer: " + ex.Message));
+                    Notice("error", "Could not start the installer: " + ex.Message);
+                    return;
+                }
+
+                // See the hand-off hazard on IBrowserHost.PrepareForInstallerHandoff: the
+                // installer we just launched will, via install-scr.ps1's Stop-NonSaverInstances,
+                // force-kill this very process shortly if it is still running — so it closes
+                // itself cleanly right now instead of waiting to be killed.
+                _host.PrepareForInstallerHandoff();
+            }).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Browser: update install failed", ex);
+            Marshal(() => Notice("error", "Could not install the update: " + ex.Message));
+        }
+        finally
+        {
+            _installing = false;
+        }
+    }
+
     // ---- settings ----------------------------------------------------------------------------
 
     /// <summary>
@@ -715,6 +883,10 @@ public sealed class BrowserBridge : IDisposable
 
                 case "useTimeOfDay" when AsBool(v) is { } timeOfDay:
                     _settings.UseTimeOfDay = timeOfDay;
+                    break;
+
+                case "autoCheckForUpdates" when AsBool(v) is { } autoCheck:
+                    _settings.AutoCheckForUpdates = autoCheck;
                     break;
 
                 case "cacheEnabled" when AsBool(v) is { } enabled:
@@ -882,7 +1054,8 @@ public sealed class BrowserBridge : IDisposable
             new PreviewCapabilitiesDto(capabilities.FfmpegAvailable, capabilities.HoverClips, capabilities.FfmpegPath),
             shortcuts.Desktop,
             shortcuts.StartMenu,
-            shortcuts.Hotkey);
+            shortcuts.Hotkey,
+            _settings.AutoCheckForUpdates);
 
         var sources = Rotation.SourceIds
             .Select(id => new SourceDto(id, SourceDisplayName(id), _sourceCounts.GetValueOrDefault(id), _settings.AutoAddSources.Contains(id)))
@@ -904,7 +1077,7 @@ public sealed class BrowserBridge : IDisposable
         }
 
         return new AboutDto(
-            typeof(BrowserBridge).Assembly.GetName().Version?.ToString() ?? "",
+            AppVersionString(),
             mpv,
             AppPaths.Root,
             AppPaths.SettingsFile,

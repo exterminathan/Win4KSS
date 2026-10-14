@@ -34,6 +34,18 @@ public interface IBrowserHost
     string? PickOpenFile(string title, string filter);
 
     void OpenFolder(string path);
+
+    /// <summary>
+    /// The user clicked Install and the downloaded, verified installer has just been launched
+    /// (detached — nothing here waits on it). That installer's own [Run] step
+    /// (<c>install-scr.ps1</c>'s <c>Stop-NonSaverInstances</c>) force-stops any
+    /// <c>Win4KSS.exe</c>/<c>.scr</c> that is not running as <c>/s</c> — including this very
+    /// browser process — so the host must shut itself down cleanly (flush settings, dispose the
+    /// download queue/cache/previews, close the WebView2) before that step can reach it, rather
+    /// than being killed mid-operation. <see cref="BrowserForm"/> implements this as closing the
+    /// window, which runs through the exact same shutdown path as closing it normally.
+    /// </summary>
+    void PrepareForInstallerHandoff();
 }
 
 /// <summary>

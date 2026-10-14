@@ -131,7 +131,8 @@ internal sealed record SettingsValues(
     PreviewCapabilitiesDto PreviewCapabilities,
     bool ShortcutDesktop,
     bool ShortcutStartMenu,
-    string? Hotkey);
+    string? Hotkey,
+    bool AutoCheckForUpdates);
 
 /// <param name="Id">A rotation source id (<see cref="Rotation.SourceIds"/>): what setAutoAdd takes.</param>
 internal sealed record SourceDto(string Id, string Name, int ClipCount, bool AutoAdd);
@@ -229,6 +230,47 @@ internal sealed record ImportPreviewMessage(
     bool PinsFit,
     double PinsRequiredGb,
     double BudgetGb) : HostMessage("importPreview");
+
+// ---- updates ----------------------------------------------------------------------------
+
+/// <summary>
+/// One consolidated update-check result (docs/browser-bridge-contract.md), sent after every
+/// check — automatic (on open, throttled to once a day) or manual ("Check now", which bypasses
+/// the throttle) — and resent on a page reload (<c>ready</c>) if one has already happened.
+/// </summary>
+internal sealed record UpdateStatusMessage(
+    string Current,
+    string? Latest,
+    bool Available,
+    string? Notes,
+    DateTime CheckedUtc,
+    string? Error) : HostMessage("updateStatus")
+{
+    public static UpdateStatusMessage From(Core.Updates.UpdateCheckResult r) =>
+        new(r.Current, r.Latest, r.Available, r.Notes, DateTime.SpecifyKind(r.CheckedUtc, DateTimeKind.Utc), r.Error);
+}
+
+/// <summary>
+/// Progress for the download-verify-launch sequence an <c>installUpdate</c> message starts.
+/// TODO(review): this message's shape/name is this implementation's own call, not dictated by
+/// the spec (which only names <c>updateStatus</c> itself as "one consolidated message") — it
+/// exists because the page needs to show live progress during download/verification.
+/// <see cref="Stage"/> is one of "Downloading", "Verifying", "Launching", "Done", "Failed".
+/// </summary>
+internal sealed record UpdateInstallProgressMessage(
+    string Stage,
+    double? Fraction,
+    long BytesReceived,
+    long? TotalBytes,
+    string? Error) : HostMessage("updateInstallProgress")
+{
+    public static UpdateInstallProgressMessage Downloading(Core.Updates.DownloadProgress p) =>
+        new("Downloading", p.Fraction, p.BytesReceived, p.TotalBytes, null);
+
+    public static UpdateInstallProgressMessage ForStage(string stage) => new(stage, null, 0, null, null);
+
+    public static UpdateInstallProgressMessage Failed(string? error) => new("Failed", null, 0, null, error);
+}
 
 // ---- notices --------------------------------------------------------------------------------
 

@@ -1125,5 +1125,14 @@ public class BrowserBridgeTests : IDisposable
         public string? PickSaveFile(string title, string suggestedName, string filter) => SavePath;
         public string? PickOpenFile(string title, string filter) => OpenPath;
         public void OpenFolder(string path) => Opened.Add(path);
+
+        public int HandoffCalls { get; private set; }
+        /// <summary>Set by a test to the real shutdown sequence (bridge/queue/cache disposal) BrowserForm.Shutdown would run, so the hand-off test can observe its effects.</summary>
+        public Action? OnHandoff { get; set; }
+        public void PrepareForInstallerHandoff()
+        {
+            HandoffCalls++;
+            OnHandoff?.Invoke();
+        }
     }
 }
