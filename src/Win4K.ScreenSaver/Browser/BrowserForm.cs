@@ -87,6 +87,8 @@ internal sealed class BrowserForm : Form, IBrowserHost
 
             AppPaths.EnsureRoot();
             _environment = await CoreWebView2Environment.CreateAsync(null, AppPaths.WebView2Directory);
+            Log.Info($"Browser: {NativeDependencies.WebView2Loader} loaded from " +
+                     $"{NativeDependencies.LoadedModulePath(NativeDependencies.WebView2Loader) ?? "(not loaded)"}");
             await _web.EnsureCoreWebView2Async(_environment);
             ConfigureWebView(_web.CoreWebView2);
 

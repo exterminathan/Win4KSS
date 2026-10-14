@@ -38,8 +38,9 @@
          That self-extracting-native-DLL shape is exactly what triggered a Bitdefender heuristic
          false positive on an unsigned download (Windows Defender scans the same file clean).
          Publish now produces ordinary loose files: Win4KSS.exe/.scr beside Win4K.Core.dll,
-         libmpv-2.dll, WebView2Loader.dll, etc. See install-scr.ps1's System32-mode guard and
-         ShortcutManager.EnsureCompanionExe/IsSingleFileBuild, both of which now assume this. -->
+         libmpv-2.dll, WebView2Loader.dll, etc. That loose folder is the user-scope install
+         (%LOCALAPPDATA%\Programs\Win4KSS). The one exception is publish\system32\Win4KSS.scr,
+         built by PublishSystem32Scr below. -->
     <!-- WebView2 ships IntelliSense XML beside its assemblies; keep it out of publish/. -->
     <AllowedReferenceRelatedFileExtensions>.pdb</AllowedReferenceRelatedFileExtensions>
   </PropertyGroup>
@@ -54,8 +55,7 @@
     <InternalsVisibleTo Include="Win4K.Tests" />
   </ItemGroup>
   <!-- The clip browser (/c) is a WebView2 page. WebView2Loader.dll is a native runtime asset
-       of this package, so single-file publish bundles and self-extracts it with libmpv
-       (IncludeNativeLibrariesForSelfExtract above). -->
+       of this package and is published loose beside the exe, like libmpv-2.dll. -->
   <ItemGroup>
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4258.31" />
   </ItemGroup>
@@ -78,6 +78,37 @@
 
   <Target Name="CopyPublishedExeToScr" AfterTargets="Publish">
     <Copy SourceFiles="$(PublishDir)$(AssemblyName).exe" DestinationFiles="$(PublishDir)$(AssemblyName).scr" ContinueOnError="true" />
+  </Target>
+
+  <!-- The System32 copy: publish\system32\Win4KSS.scr, ONE file (a fixed contract path that
+       install-scr.ps1 and the installer copy from).
+
+       The Screen Saver Settings dropdown only lists .scr files in System32, but the loose DLLs
+       must not go there: libmpv-2.dll and WebView2Loader.dll in System32 would shadow other
+       apps' copies through the DLL search path. So this is a single-file bundle of the MANAGED
+       assemblies only, which load from memory - nothing is extracted to disk, and with
+       IncludeNativeLibrariesForSelfExtract=false no native DLL is bundled (that self-extracting
+       shape is what Bitdefender flagged). At run time it finds no libmpv-2.dll beside itself and
+       borrows the user-scope install's natives: see Win4K.Core's NativeDependencies.
+
+       A nested Publish of this same project with different global properties. It gets its own
+       obj\system32 and bin\system32 (in Core too, as the properties flow to the reference) so it
+       never invalidates the normal build's outputs, and it publishes to a staging folder from
+       which only the bundle is copied - the loose natives it also emits never reach system32\. -->
+  <Target Name="PublishSystem32Scr" AfterTargets="Publish"
+          Condition="'$(Win4KSystem32Build)' != 'true' and '$(PublishSingleFile)' != 'true'">
+    <PropertyGroup>
+      <_System32Staging>$(MSBuildProjectDirectory)\obj\system32\$(Configuration)\publish\</_System32Staging>
+      <_System32Dir>$([MSBuild]::EnsureTrailingSlash('$(PublishDir)'))system32\</_System32Dir>
+    </PropertyGroup>
+
+    <RemoveDir Directories="$(_System32Staging)" />
+    <MSBuild Projects="$(MSBuildProjectFullPath)" Targets="Publish"
+             Properties="Configuration=$(Configuration);Win4KSystem32Build=true;PublishSingleFile=true;IncludeNativeLibrariesForSelfExtract=false;IncludeAllContentForSelfExtract=false;IntermediateOutputPath=obj\system32\$(Configuration)\;OutputPath=bin\system32\$(Configuration)\;PublishDir=$(_System32Staging)" />
+
+    <RemoveDir Directories="$(_System32Dir)" />
+    <Copy SourceFiles="$(_System32Staging)$(AssemblyName).exe" DestinationFiles="$(_System32Dir)$(AssemblyName).scr" />
+    <Message Importance="high" Text="$(MSBuildProjectName) -> $(_System32Dir)$(AssemblyName).scr (one-file, for System32)" />
   </Target>
 
   <!-- Microsoft.Web.WebView2's targets reference its WPF control too, which drags in WPF's

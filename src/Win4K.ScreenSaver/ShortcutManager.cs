@@ -39,9 +39,7 @@ public static class ShortcutManager
     /// shortcut with /now resolves to FullScreen when it targets the .scr and to StartNow
     /// when it targets the .exe.
     /// </summary>
-    public static string CompanionExePath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "Programs", "Win4KSS", "Win4KSS.exe");
+    public static string CompanionExePath => Path.Combine(AppPaths.CompanionDirectory, "Win4KSS.exe");
 
     /// <summary>
     /// The executable a shortcut should point at, always an .exe for the reason above.
@@ -59,73 +57,28 @@ public static class ShortcutManager
     }
 
     /// <summary>
-    /// True when this assembly was published single-file (the old packaging:
-    /// PublishSingleFile + IncludeNativeLibrariesForSelfExtract). A single-file host has no
-    /// on-disk assembly file of its own to report, so <see cref="Assembly.Location"/> comes
-    /// back empty for code running out of it. The normal case now is a loose multi-file
-    /// publish — Win4KSS.exe sitting next to Win4K.Core.dll, libmpv-2.dll,
-    /// WebView2Loader.dll, etc. — for which Location is the real path on disk.
-    /// </summary>
-    public static bool IsSingleFileBuild => string.IsNullOrEmpty(typeof(ShortcutManager).Assembly.Location);
-
-    /// <summary>
-    /// Makes sure a companion .exe exists for shortcuts to target, copying the running image
-    /// if necessary. Lets the settings dialog create a working hotkey even when the app was
-    /// started from the installed .scr and the install script was never run.
+    /// Reports whether the companion .exe exists for shortcuts to target, logging if not.
+    ///
+    /// It never creates one. Only the installers (install-scr.ps1, the setup exe) do, because
+    /// they copy the whole loose publish together. Copying the running image would be wrong
+    /// both ways round: from a loose install it yields an exe missing its sibling DLLs, and
+    /// from the one-file .scr in System32 it would overwrite the companion Win4KSS.exe with
+    /// the single-file bundle (and, through the hard link, the user-scope Win4KSS.scr too).
     /// </summary>
     public static bool EnsureCompanionExe() => EnsureCompanionExe(CompanionExePath);
 
     /// <summary>
-    /// Testable core of <see cref="EnsureCompanionExe()"/>, taking the destination explicitly
-    /// so tests can point it at a throwaway path instead of the real
-    /// %LOCALAPPDATA%\Programs\Win4KSS.
+    /// Testable core of <see cref="EnsureCompanionExe()"/>, taking the path explicitly so tests
+    /// can point it at a throwaway location instead of the real %LOCALAPPDATA%\Programs\Win4KSS.
     /// </summary>
-    internal static bool EnsureCompanionExe(string destination)
+    internal static bool EnsureCompanionExe(string companionExe)
     {
-        try
-        {
-            if (!IsSingleFileBuild)
-            {
-                // Loose multi-file publish: Environment.ProcessPath is just Win4KSS.exe, and
-                // it needs Win4K.Core.dll, libmpv-2.dll, WebView2Loader.dll etc. sitting right
-                // beside it to run at all. Copying only the exe here would produce a companion
-                // that looks right but cannot start — silently broken. Only install-scr.ps1 /
-                // the installer, which copy the whole publish output together, may create this
-                // companion now; this just reports whether they already have.
-                if (File.Exists(destination))
-                    return true;
-
-                Log.Warn($"Shortcut: no companion exe at {destination}, and this build is not " +
-                         "single-file, so one cannot be made by copying the running exe alone " +
-                         "(it would be missing its sibling DLLs). Run scripts/install-scr.ps1 " +
-                         "or the installer to create a working companion.");
-                return false;
-            }
-
-            var source = Environment.ProcessPath;
-            if (source is null || !File.Exists(source))
-                return File.Exists(destination);
-
-            if (string.Equals(source, destination, StringComparison.OrdinalIgnoreCase))
-                return true;
-
-            if (File.Exists(destination) &&
-                new FileInfo(destination).LastWriteTimeUtc >= new FileInfo(source).LastWriteTimeUtc)
-            {
-                return true;
-            }
-
-            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
-            File.Copy(source, destination, overwrite: true);
-
-            Log.Info($"Shortcut: companion exe at {destination}");
+        if (File.Exists(companionExe))
             return true;
-        }
-        catch (Exception ex)
-        {
-            Log.Error("Shortcut: could not create the companion exe", ex);
-            return false;
-        }
+
+        Log.Warn($"Shortcut: no companion exe at {companionExe}. Shortcuts need the user-scope " +
+                 "install; run the Win4KSS installer (or scripts/install-scr.ps1) to create it.");
+        return false;
     }
 
     /// <summary>

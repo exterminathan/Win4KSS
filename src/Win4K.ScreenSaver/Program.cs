@@ -27,6 +27,10 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        // First, before anything P/Invokes: the one-file .scr in System32 has no native DLLs
+        // beside it and has to borrow the user-scope install's. See NativeDependencies.
+        var natives = NativeDependencies.Initialize();
+
         ApplicationConfiguration.Initialize();
         MpvLoader.Register();
 
@@ -39,12 +43,29 @@ internal static class Program
         var (verb, argument) = ParseArguments(args);
         Log.Info($"Launched with verb '{verb}'{(argument is null ? "" : $" arg '{argument}'")}");
 
+        switch (GateOnNatives(verb, natives))
+        {
+            case NativeGate.ExitQuietly:
+                // A screen saver that crashes or hangs can leave the session's saver state
+                // stuck; exiting at once just ends this run of it. The reason is in the log.
+                Log.Warn($"{verb}: native DLLs missing; exiting without showing anything");
+                return 0;
+
+            case NativeGate.AskToReinstall:
+                MessageBox.Show(
+                    "Win4KSS cannot find the files it needs (libmpv-2.dll and WebView2Loader.dll).\n\n" +
+                    $"They belong in:\n{natives.Directory}\n\n" +
+                    "Reinstall Win4KSS to put them back.",
+                    "Win4KSS", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return 1;
+        }
+
         try
         {
             switch (verb)
             {
                 case Verb.Configure:
-                    return RunBrowser(argument);
+                    return RunBrowser(argument, natives);
 
                 case Verb.Preview:
                     return RunPreview(argument);
@@ -132,6 +153,66 @@ internal static class Program
         return (verb, string.IsNullOrWhiteSpace(second) ? null : second);
     }
 
+    // ---- native DLLs ----------------------------------------------------------------------
+
+    internal enum NativeGate
+    {
+        Proceed,
+        /// <summary>/s: nothing to show and nobody to tell; end this run of the saver cleanly.</summary>
+        ExitQuietly,
+        /// <summary>A human opened a window: say the install needs repairing.</summary>
+        AskToReinstall,
+    }
+
+    /// <summary>
+    /// What a verb does when its native DLLs cannot be found. Preview (no video), /now (it only
+    /// asks Windows to start the saver, which runs its own check) and the settings verbs need
+    /// none; the rest need libmpv, and the clip browser also WebView2Loader.
+    /// </summary>
+    internal static NativeGate GateOnNatives(Verb verb, NativeLocation natives) => verb switch
+    {
+        Verb.FullScreen when !natives.CanPlay => NativeGate.ExitQuietly,
+        Verb.Window when !natives.CanPlay => NativeGate.AskToReinstall,
+        Verb.Configure when !natives.CanBrowse => NativeGate.AskToReinstall,
+        _ => NativeGate.Proceed,
+    };
+
+    /// <summary>
+    /// Points WebView2 at the companion dir's WebView2Loader.dll. Must run before any other
+    /// WebView2 API. Run from the one-file .scr with none of these (nor SetDllDirectory), the
+    /// first WebView2 call fails with "Unable to load DLL 'WebView2Loader.dll'" and the browser
+    /// reports the runtime as missing. Measured from a temp copy of the .scr: SetDllDirectory,
+    /// SetLoaderDllFolderPath and the resolver below each fix it on their own; all three are
+    /// kept so no single one of them is load-bearing.
+    /// </summary>
+    private static void UseCompanionWebView2Loader(string directory)
+    {
+        var loader = Path.Combine(directory, NativeDependencies.WebView2Loader);
+        try
+        {
+            CoreWebView2Environment.SetLoaderDllFolderPath(directory);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Browser: SetLoaderDllFolderPath({directory}) failed: {ex.Message}");
+        }
+
+        try
+        {
+            System.Runtime.InteropServices.NativeLibrary.SetDllImportResolver(
+                typeof(CoreWebView2Environment).Assembly,
+                (name, _, _) =>
+                    Path.GetFileNameWithoutExtension(name).Equals("WebView2Loader", StringComparison.OrdinalIgnoreCase) &&
+                    System.Runtime.InteropServices.NativeLibrary.TryLoad(loader, out var handle)
+                        ? handle
+                        : IntPtr.Zero);
+        }
+        catch (InvalidOperationException)
+        {
+            // The assembly already has a resolver of its own; SetLoaderDllFolderPath covers it.
+        }
+    }
+
     // ---- verbs ----------------------------------------------------------------------------
 
     /// <summary>The single-instance mutex of the clip browser, per session.</summary>
@@ -144,8 +225,11 @@ internal static class Program
 
     internal const string WebView2RuntimeUrl = "https://go.microsoft.com/fwlink/p/?LinkId=2124703";
 
-    private static int RunBrowser(string? ownerArgument)
+    private static int RunBrowser(string? ownerArgument, NativeLocation natives)
     {
+        if (natives.Kind == NativeLocationKind.Companion)
+            UseCompanionWebView2Loader(natives.Directory);
+
         // Windows' Screen Saver Settings passes its own HWND ("/c:1234"). The browser is a full
         // window of its own rather than a dialog modal to that one, so it is only logged.
         if (ownerArgument is not null)

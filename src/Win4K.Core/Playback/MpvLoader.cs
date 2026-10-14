@@ -7,21 +7,23 @@ namespace Win4K.Core.Playback;
 /// Finds libmpv-2.dll at runtime.
 ///
 /// Normally the default probing rules are enough — the DLL sits beside the executable. The
-/// awkward case is the installed screen saver: Windows only lists .scr files found in
-/// System32, so the shipped artefact is a single-file publish and the native library is
-/// extracted by the host to a temp directory. That usually resolves itself, but when it does
-/// not (a locked-down temp, an AV quarantining the extraction) the fallbacks below give us
-/// somewhere predictable to look, and a clear log line rather than a bare DllNotFoundException.
+/// awkward case is the one-file Win4KSS.scr in System32 (the only place the Screen Saver
+/// Settings dropdown looks), which carries no native DLLs and borrows them from the user-scope
+/// install. <see cref="NativeDependencies.Initialize"/> already puts that directory on the DLL
+/// search path; it is also listed below so this fallback does not depend on that, and so a
+/// failure ends in a clear log line rather than a bare DllNotFoundException.
 /// </summary>
 public static class MpvLoader
 {
     private static bool _registered;
+    private static int _loggedLoad;
     private static readonly object Gate = new();
 
     /// <summary>Probed in order, after the default resolver has already failed.</summary>
     public static IEnumerable<string> CandidateDirectories()
     {
         yield return AppContext.BaseDirectory;
+        yield return AppPaths.CompanionDirectory;
         yield return AppPaths.RuntimeDirectory;
         yield return Path.Combine(AppContext.BaseDirectory, "native", "mpv");
 
@@ -57,7 +59,12 @@ public static class MpvLoader
 
         // Try the ordinary rules first so a DLL next to the exe still wins.
         if (NativeLibrary.TryLoad(libraryName, assembly, searchPath, out var handle))
+        {
+            // The resolver runs once per entry point, so say which copy won only the first time.
+            if (Interlocked.Exchange(ref _loggedLoad, 1) == 0)
+                Log.Info($"mpv: loaded {NativeDependencies.LoadedModulePath(NativeDependencies.LibMpv) ?? libraryName}");
             return handle;
+        }
 
         foreach (var dir in CandidateDirectories())
         {

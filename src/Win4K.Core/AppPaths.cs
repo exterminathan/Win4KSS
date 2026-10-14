@@ -74,8 +74,30 @@ public static class AppPaths
     /// </summary>
     public static string WebView2Directory => Path.Combine(Root, "webview2");
 
-    /// <summary>Where libmpv-2.dll is extracted to when running from a single-file .scr.</summary>
+    /// <summary>Last-resort place MpvLoader looks for libmpv-2.dll (a leftover of the old self-extracting publish).</summary>
     public static string RuntimeDirectory => Path.Combine(Root, "runtime");
+
+    /// <summary>Overrides <see cref="CompanionDirectory"/>. A test seam; not used in normal runs.</summary>
+    public const string CompanionOverrideVariable = "WIN4K_COMPANION_DIR";
+
+    /// <summary>
+    /// The full user-scope install, %LOCALAPPDATA%\Programs\Win4KSS: Win4KSS.exe (what shortcuts
+    /// target) beside every DLL the app needs. The one-file .scr in System32 loads its native
+    /// DLLs from here; see <see cref="NativeDependencies"/>.
+    /// </summary>
+    public static string CompanionDirectory
+    {
+        get
+        {
+            var overridden = Environment.GetEnvironmentVariable(CompanionOverrideVariable);
+            if (!string.IsNullOrWhiteSpace(overridden))
+                return overridden;
+
+            return Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Programs", "Win4KSS");
+        }
+    }
 
     public static string LogFile => Path.Combine(Root, "win4k.log");
 
