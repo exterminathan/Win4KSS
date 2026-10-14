@@ -1,9 +1,13 @@
 ; Win4KSS installer (Inno Setup 6).
 ;
-; Packages the single-file publish\ output (built by `dotnet publish`, which already bundles
-; libmpv-2.dll and WebView2Loader.dll inside Win4KSS.exe/.scr via IncludeNativeLibrariesForSelfExtract
-; -- see scripts/build-installer.ps1, which publishes before compiling this script and verifies
-; those two files exist; nothing extra needs to be added here for them).
+; Packages the loose multi-file publish\ output (built by `dotnet publish`). This used to be a
+; single-file build with libmpv-2.dll/WebView2Loader.dll bundled and self-extracted inside
+; Win4KSS.exe/.scr (IncludeNativeLibrariesForSelfExtract); that shape -- an unsigned exe that
+; self-extracts a native DLL at launch -- is exactly what tripped a Bitdefender heuristic false
+; positive on another machine (Windows Defender scans the same file clean). Publish now produces
+; ordinary loose files, so every one of them is listed in [Files] below and has to land together
+; in {app} -- see scripts/build-installer.ps1, which publishes before compiling this script and
+; verifies the real output list rather than assuming it.
 ;
 ; Deliberately does NOT reimplement the registry/shortcut/SPI_SETSCREENSAVEACTIVE work that
 ; scripts/install-scr.ps1 already does and already got right (see CLAUDE.md -- a shortcut
@@ -74,11 +78,19 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-; Checked by default: this is the one thing most people installing a screen saver actually
-; want -- to see it in the normal Windows screen saver picker. Unchecking falls back to
-; install-scr.ps1 -UserScope, which is still a fully working install in every other respect
-; (see that script's own doc comment).
-Name: "systemscr"; Description: "Make {#MyAppName} available in Windows' Screen Saver Settings (recommended)"; GroupDescription: "Screen saver registration:"
+; TODO(review): disabled (unchecked, and GetInstallScrArgs below ignores it) rather than removed
+; outright, so the wizard page layout and wording are ready to flip back on if System32 mode
+; ever gains real support for a loose multi-file publish. Right now install-scr.ps1 refuses its
+; System32 copy mode outright -- see its own comment -- because copying only the .scr there,
+; without Win4K.Core.dll/libmpv-2.dll/WebView2Loader.dll beside it, would produce a screen saver
+; Windows lists in the dropdown but cannot actually run. Checking this box today would make the
+; install-scr.ps1 [Run] step below throw before it ever reaches shortcut creation, which Inno
+; does not surface as an install failure -- i.e. silently no registration at all, not just no
+; System32 copy. -UserScope (what every install now always uses, see GetInstallScrArgs) is a
+; fully working install in every other respect (see install-scr.ps1's own doc comment); the only
+; thing it gives up is appearing in the Screen Saver Settings *dropdown*, which already was an
+; "Outstanding" manual step per CLAUDE.md, not something this installer ever guaranteed.
+Name: "systemscr"; Description: "Make {#MyAppName} available in Windows' Screen Saver Settings (not currently supported by this build)"; GroupDescription: "Screen saver registration:"; Flags: unchecked
 ; TODO(review): left unchecked on purpose -- changing someone's active screen saver and idle
 ; timeout as a side effect of installing software felt presumptuous. Flip the default, or the
 ; wording, if that is wrong for how this actually gets shared.
@@ -96,11 +108,28 @@ Name: "setdefault"; Description: "Set {#MyAppName} as my active screen saver now
 Name: "importsettings"; Description: "Import settings from a file..."; GroupDescription: "Settings:"; Flags: unchecked; Check: NotExistingInstall
 
 [Files]
-; ignoreversion: these are single-file self-contained builds whose internal version doesn't
-; move independently of this installer's, and re-running Setup over an existing install should
-; always win.
+; Every file `dotnet publish` actually produces now has to be listed -- Win4KSS.exe/.scr alone,
+; without their sibling DLLs, cannot run; see the header comment above. ignoreversion: these
+; builds' internal version doesn't move independently of this installer's, and re-running Setup
+; over an existing install should always win.
 Source: "..\publish\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\publish\{#MyAppScrName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\publish\Win4KSS.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\publish\Win4KSS.deps.json"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\publish\Win4KSS.runtimeconfig.json"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\publish\Win4K.Core.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\publish\libmpv-2.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\publish\WebView2Loader.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\publish\Microsoft.Web.WebView2.Core.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\publish\Microsoft.Web.WebView2.WinForms.dll"; DestDir: "{app}"; Flags: ignoreversion
+; NuGet also drops a RID-specific copy of WebView2Loader.dll under runtimes\win-x64\native\
+; alongside the flattened top-level one above -- part of the real publish output, so it ships
+; too rather than being assumed redundant.
+Source: "..\publish\runtimes\*"; DestDir: "{app}\runtimes"; Flags: ignoreversion recursesubdirs createallsubdirs
+; TODO(review): .pdb symbol files -- small, and useful if a crash ever needs symbolicating, but
+; drop these two lines if you'd rather keep {app} to only what can run.
+Source: "..\publish\Win4KSS.pdb"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\publish\Win4K.Core.pdb"; DestDir: "{app}"; Flags: ignoreversion
 ; Bundled so the [Run]/[UninstallRun] steps below can call it, and so it is still sitting in
 ; {app} afterwards if the registration ever needs to be re-run by hand (e.g. -SetAsDefault
 ; later, or after a Windows feature update resets screen saver state).
@@ -235,13 +264,17 @@ begin
 end;
 
 // Builds the extra arguments for the install-scr.ps1 [Run] step above from the Tasks page.
+//
+// -UserScope is now unconditional: see the "systemscr" Task's own comment in [Tasks] above.
+// install-scr.ps1 refuses outright when asked to do a System32 install from a loose multi-file
+// publish, and Inno does not surface a [Run] entry's nonzero exit as an install failure -- so
+// ignoring the task here (rather than reading it) is what keeps every install's shortcuts and
+// companion exe actually getting created, instead of the whole step silently doing nothing.
 function GetInstallScrArgs(Param: String): String;
 var
   Args: String;
 begin
-  Args := '';
-  if not WizardIsTaskSelected('systemscr') then
-    Args := Args + ' -UserScope';
+  Args := '-UserScope';
   if WizardIsTaskSelected('setdefault') then
     Args := Args + ' -SetAsDefault -TimeoutMinutes 10';
   Result := Trim(Args);

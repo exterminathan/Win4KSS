@@ -6,16 +6,16 @@
     1. Makes sure native/mpv/libmpv-2.dll exists (fetching it via fetch-libmpv.ps1 if not) --
        this has to happen BEFORE `dotnet publish`, because libmpv is a build-time input.
        Win4K.Core.csproj only flows the DLL into the build at all if it already exists
-       (Condition="Exists('$(LibMpvPath)')"), and with PublishSingleFile +
-       IncludeNativeLibrariesForSelfExtract it ends up bundled *inside* Win4KSS.exe/.scr, not
-       sitting next to them -- a real `dotnet publish` run against this repo confirms the
-       output folder holds exactly Win4KSS.exe, Win4KSS.scr, and two .pdb files, nothing
-       named libmpv or WebView2Loader. There is nothing for the installer to add separately;
-       the thing to get right is making sure it was embedded at build time.
-    2. Runs `dotnet publish` for the screen saver project.
-    3. Sanity-checks the result (the two files exist, are the expected rough size -- a build
-       with libmpv missing still "succeeds" at a much smaller file size, which is exactly the
-       kind of silent failure this script exists to catch).
+       (Condition="Exists('$(LibMpvPath)')").
+    2. Runs `dotnet publish` for the screen saver project. Publish is an ordinary loose
+       multi-file build now (no PublishSingleFile / IncludeNativeLibrariesForSelfExtract --
+       that self-extracting-native-DLL shape is what tripped an AV heuristic false positive on
+       an unsigned download), so libmpv-2.dll, WebView2Loader.dll, Win4K.Core.dll etc. land
+       beside Win4KSS.exe/.scr as their own files instead of being bundled inside them.
+    3. Sanity-checks the result: every file installer/Win4KSS.iss's [Files] section expects to
+       ship is actually present in publish\, and libmpv-2.dll in particular is the expected
+       rough size -- a build with libmpv missing still "succeeds" at a much smaller file size,
+       which is exactly the kind of silent failure this script exists to catch.
     4. Finds Inno Setup's ISCC.exe, installing Inno Setup via winget if it's missing.
     5. Compiles installer/Win4KSS.iss into installer/output/Win4KSS-Setup-<version>.exe.
 
@@ -77,7 +77,7 @@ else {
 # ---- 2. publish -------------------------------------------------------------------------
 
 if (-not $SkipPublish) {
-    Write-Host 'Publishing Win4KSS (Release, single-file)...' -ForegroundColor Cyan
+    Write-Host 'Publishing Win4KSS (Release)...' -ForegroundColor Cyan
 
     if (Test-Path -LiteralPath $publishDir) {
         Remove-Item -LiteralPath $publishDir -Recurse -Force
@@ -97,34 +97,46 @@ else {
 
 # ---- 3. verify ----------------------------------------------------------------------------
 
-$exePath = Join-Path $publishDir 'Win4KSS.exe'
-$scrPath = Join-Path $publishDir 'Win4KSS.scr'
-
-foreach ($p in @($exePath, $scrPath)) {
+# Every file installer\Win4KSS.iss's [Files] section expects to ship, kept in sync with it by
+# hand (Inno's preprocessor can't read this script, and this script can't easily parse .iss).
+# If `dotnet publish`'s output ever stops matching this list, that is exactly the kind of
+# silent mismatch -- an installer shipped without one of its own DLLs -- this check exists to
+# catch before ISCC.exe silently compiles a broken installer around whatever is missing.
+$expectedFiles = @(
+    'Win4KSS.exe', 'Win4KSS.scr', 'Win4KSS.dll', 'Win4KSS.deps.json', 'Win4KSS.runtimeconfig.json',
+    'Win4K.Core.dll', 'libmpv-2.dll', 'WebView2Loader.dll',
+    'Microsoft.Web.WebView2.Core.dll', 'Microsoft.Web.WebView2.WinForms.dll'
+)
+foreach ($name in $expectedFiles) {
+    $p = Join-Path $publishDir $name
     if (-not (Test-Path -LiteralPath $p)) {
         throw "$p is missing after publish. Something is wrong with the build, not this script."
     }
 }
 
-# libmpv alone is ~114 MB; a publish that somehow didn't embed it would be a fraction of this.
-# This is the "don't assume, verify" check -- see scripts/build-installer.ps1's own history in
-# CLAUDE.md for why: it was confirmed empirically that libmpv/WebView2Loader are bundled INSIDE
-# Win4KSS.exe/.scr (self-extracted at runtime), not placed beside them as separate files, so
-# their absence as loose files in publish\ is expected and not itself a problem -- file *size*
-# is the real signal.
+$exePath              = Join-Path $publishDir 'Win4KSS.exe'
+$publishedLibmpvPath  = Join-Path $publishDir 'libmpv-2.dll'
+
+# Publish is loose multi-file now (no PublishSingleFile / IncludeNativeLibrariesForSelfExtract),
+# so the two checks that used to live here are now the other way around from when this script
+# was written: Win4KSS.exe should be SMALL (an ordinary apphost, no embedded native payload) and
+# libmpv-2.dll -- ~114 MB alone -- should be sitting loose beside it, not missing. Checking both
+# directions catches a regression back to single-file publishing just as reliably as it catches
+# libmpv failing to flow into the build at all.
 $exeSizeMb = [math]::Round((Get-Item -LiteralPath $exePath).Length / 1MB, 1)
 Write-Host "Win4KSS.exe: $exeSizeMb MB" -ForegroundColor Green
-if ($exeSizeMb -lt 80) {
-    throw "Win4KSS.exe is only $exeSizeMb MB -- too small to contain libmpv (~114 MB) and WebView2Loader. " +
-          "Confirm native\mpv\libmpv-2.dll exists and re-publish (delete publish\ first to rule out a stale build)."
+if ($exeSizeMb -gt 10) {
+    throw "Win4KSS.exe is $exeSizeMb MB -- too large for an ordinary apphost. This looks like " +
+          "PublishSingleFile/IncludeNativeLibrariesForSelfExtract came back in Win4K.ScreenSaver.csproj " +
+          "(deliberately removed -- see its own comment and CLAUDE.md -- to stop shipping a " +
+          "self-extracting-native-DLL exe, the shape that triggered an AV heuristic false positive)."
 }
 
-$looseLibmpv = Join-Path $publishDir 'libmpv-2.dll'
-if (Test-Path -LiteralPath $looseLibmpv) {
-    # Would mean a future SDK/csproj change stopped embedding it and started copying it
-    # loose instead -- the installer's [Files] section would then need updating to include
-    # it explicitly, per the original task. Flag it rather than silently doing the wrong thing.
-    Write-Warning "libmpv-2.dll showed up as a loose file in publish\ -- that didn't happen when this script was written. installer\Win4KSS.iss's [Files] section does not currently copy it; add it there if this persists."
+$libmpvSizeMb = [math]::Round((Get-Item -LiteralPath $publishedLibmpvPath).Length / 1MB, 1)
+Write-Host "libmpv-2.dll: $libmpvSizeMb MB" -ForegroundColor Green
+if ($libmpvSizeMb -lt 80) {
+    throw "libmpv-2.dll is only $libmpvSizeMb MB -- too small to be the real library. " +
+          "Confirm native\mpv\libmpv-2.dll exists and re-publish (delete publish\ first to rule out a stale build)."
 }
 
 # ---- 4. find or install Inno Setup -------------------------------------------------------
