@@ -126,8 +126,12 @@ function Sync-CompanionFiles {
     # handling for those two and must not be fought over them here. Skips *.pdb: those are
     # symbols, not something the running app needs beside it. Removes stale files that are in
     # $To but not in $From, so a DLL a past build needed and this one does not does not linger
-    # across upgrades -- $companionDir holds nothing but this app's own published output, so
-    # that is always safe.
+    # across upgrades -- but ONLY among .dll/.json files and anything under runtimes\, i.e. the
+    # file shapes a publish actually produces. $companionDir is NOT always publish-output-only:
+    # the Inno Setup installer also puts its own unins000.exe/.dat, this very script, and
+    # THIRD-PARTY-NOTICES.md there. Deleting those would break Programs & Features' uninstall
+    # and strand a script this same [Run] step still needs -- restricting removal by file shape
+    # keeps this function from ever touching something it didn't put there itself.
     param([string]$From, [string]$To)
 
     $fromFull = (Resolve-Path -LiteralPath $From).Path
@@ -152,7 +156,11 @@ function Sync-CompanionFiles {
 
     $toFull = (Resolve-Path -LiteralPath $To).Path
     Get-ChildItem -LiteralPath $To -Recurse -File |
-        Where-Object { $skipNames -notcontains $_.Name } |
+        Where-Object {
+            ($skipNames -notcontains $_.Name) -and
+            ($_.Extension -ieq '.dll' -or $_.Extension -ieq '.json' -or
+             $_.FullName.Substring($toFull.Length + 1).StartsWith('runtimes\', [StringComparison]::OrdinalIgnoreCase))
+        } |
         ForEach-Object {
             $rel = $_.FullName.Substring($toFull.Length + 1)
             if (-not $wanted.Contains($rel)) {
