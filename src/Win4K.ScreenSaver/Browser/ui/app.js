@@ -1352,6 +1352,10 @@
     });
   }
 
+  // TODO(review): section placement/wording is this implementation's own call -- "Updates"
+  // sits right after the version line (it's literally about the version shown there) and
+  // before "Files"/"Backup"; the button labels ("Check now", "Install update") and the
+  // "nothing shown when up to date" behaviour (see renderUpdateStatus) are judgment calls too.
   function buildAboutPane() {
     const p = pane('about');
     p.innerHTML = `
