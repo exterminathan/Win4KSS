@@ -120,8 +120,14 @@ Task Manager, hotkey issues, and a few other common snags.
 
 ## Licensing and credits
 
+Win4KSS's own source is licensed under the [GNU General Public License v3.0](LICENSE).
+
 Win4KSS streams Apple's own Aerials CDN, the Internet Archive, NASA's video library, and a
 few vendor/community feeds — see [`docs/THIRD-PARTY-NOTICES.md`](docs/THIRD-PARTY-NOTICES.md)
 for exactly what comes from where, under what license, and what that means for how you can
 use it (short version: personal viewing, not commercial use or redistribution of the video
 itself). It also bundles a GPL build of libmpv; that document explains what that obligates.
+
+### Code signing policy
+
+See [`docs/SIGNING-POLICY.md`](docs/SIGNING-POLICY.md) for how releases are built and signed.

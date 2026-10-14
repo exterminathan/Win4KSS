@@ -1,0 +1,74 @@
+name: Build installer
+
+# Builds the Windows installer the same way a release build is meant to happen: from a clean
+# checkout, on a GitHub-hosted runner, with no manual intervention. This is also a real
+# requirement, not just good practice -- SignPath Foundation's free tier (see
+# docs/SIGNING-POLICY.md) requires every job leading up to a signing request to run on
+# GitHub-hosted runners, never self-hosted.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Run tests
+        shell: pwsh
+        run: dotnet test -c Release
+
+      # A build-time input to dotnet publish (Win4K.Core.csproj only flows it into the build if
+      # the file already exists), so this has to happen before the next step -- same order
+      # scripts/build-installer.ps1 itself documents and relies on.
+      - name: Fetch libmpv
+        shell: pwsh
+        run: ./scripts/fetch-libmpv.ps1
+
+      # Publishes (both the loose multi-file build and the separate System32 one-file .scr),
+      # sanity-checks the result, finds or installs Inno Setup, and compiles the installer --
+      # the exact same script a human runs locally, so CI can never silently diverge from it.
+      - name: Build installer
+        shell: pwsh
+        run: ./scripts/build-installer.ps1
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Win4KSS-installer
+          path: installer/output/*.exe
+          retention-days: 30
+          if-no-files-found: error
+
+      # TODO: once accepted into SignPath Foundation (see docs/SIGNING-POLICY.md), submit the
+      # artifact above for signing here, e.g.:
+      #
+      #   - name: Submit for signing
+      #     uses: signpath/github-action-submit-signing-request@v1
+      #     with:
+      #       api-token: "${{ secrets.SIGNPATH_API_TOKEN }}"
+      #       organization-id: "<signpath-org-id>"
+      #       project-slug: "win4kss"
+      #       signing-policy-slug: "release-signing"
+      #       artifact-configuration-slug: "installer"
+      #       github-artifact-id: "${{ steps.upload-installer.outputs.artifact-id }}"
+      #       wait-for-completion: true
+      #       output-artifact-directory: "signed"
+      #
+      # Needs: the upload step above given an explicit `id:` so its artifact-id output can be
+      # referenced, the real organization-id/signing-policy-slug/artifact-configuration-slug
+      # from the SignPath project once it exists, and SIGNPATH_API_TOKEN added as a repository
+      # secret. Publishing the signed result as a GitHub Release is a separate step to add once
+      # this is live.
