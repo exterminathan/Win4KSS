@@ -1226,6 +1226,10 @@ public class BrowserBridgeTests : IDisposable
         await built.Bridge.InitializeAsync();
         Send(built.Bridge, new { type = "ready" });
 
+        // Let the automatic update check that opening the browser starts finish first: its own
+        // save landing during the hand-off made this test flaky on a loaded machine.
+        await built.Bridge.Background;
+
         // A pin download queued the ordinary way (queue.json now has a real, resumable job in
         // it) and a settings edit still sitting in the debounce -- exactly the two things the
         // hand-off must not lose or corrupt.

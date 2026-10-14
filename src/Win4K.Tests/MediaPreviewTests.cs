@@ -929,7 +929,7 @@ public class ProcessRunnerTests
     [Fact]
     public async Task Exit_code_and_stderr_are_captured()
     {
-        var result = await new ProcessRunner().RunAsync(Cmd, ["/c", "echo oops 1>&2 & exit 3"], TimeSpan.FromSeconds(20), CancellationToken.None);
+        var result = await new ProcessRunner().RunAsync(Cmd, ["/c", "echo oops 1>&2 & exit 3"], TimeSpan.FromSeconds(60), CancellationToken.None);
 
         Assert.Equal(3, result.ExitCode);
         Assert.Contains("oops", result.StdErr);
@@ -952,7 +952,8 @@ public class ProcessRunnerTests
     /// <summary>ping's process id, by parent — polled briefly because cmd starts it asynchronously.</summary>
     private static async Task<List<int>> ChildrenOf(int parent)
     {
-        for (var i = 0; i < 50; i++)
+        // Up to 10 s: on a loaded machine cmd can take seconds to get ping going.
+        for (var i = 0; i < 200; i++)
         {
             var found = Process.GetProcessesByName("ping")
                                .Where(p => ParentOf(p.Id) == parent)

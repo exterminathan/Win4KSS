@@ -339,6 +339,88 @@ public class PlaylistReliabilityTests : IDisposable
         Assert.All(_mpv.Loads.Skip(lastReplace), l => Assert.StartsWith(@"C:\cache\", l.Url));
     }
 
+    private void LeanOnCache(HashSet<string> cached)
+    {
+        _engine.IsAvailableOffline = c => cached.Contains(c.Id);
+        _engine.ResolveUrl = c => cached.Contains(c.Id) ? $@"C:\cache\{c.Id}.mov" : c.PlayableUrl;
+        _mpv.Fails = url => url.StartsWith("https://");
+        Start(Clips("a", "b", "c", "d", "e", "f", "g"));
+        Assert.True(_engine.IsCachedOnly);
+    }
+
+    /// <summary>Moves the clock on as if the clip on screen kept playing, so the watchdog stays quiet.</summary>
+    private void PlayFor(TimeSpan span)
+    {
+        _mpv.PlaybackTime = (_mpv.PlaybackTime ?? 0) + span.TotalSeconds;
+        _clock.Advance(span);
+        _engine.Tick();
+        _mpv.Pump();
+    }
+
+    [Fact]
+    public void Leaning_on_the_cache_lasts_only_for_the_cooldown_then_every_rotation_clip_is_a_candidate()
+    {
+        LeanOnCache(["e", "f"]);
+        _mpv.Fails = _ => false; // the network is back
+
+        PlayFor(PlaylistEngine.CachedOnlyCooldown);
+
+        Assert.False(_engine.IsCachedOnly);
+        Assert.Equal(7, _engine.Order.Count);
+
+        var before = _mpv.Loads.Count;
+        for (var i = 0; i < 3; i++)
+            _mpv.FinishCurrent();
+        Assert.Contains(_mpv.Loads.Skip(before), l => l.Url.StartsWith("https://"));
+    }
+
+    [Fact]
+    public void If_the_network_is_still_down_the_next_cooldown_is_longer()
+    {
+        LeanOnCache(["e", "f"]);
+
+        PlayFor(PlaylistEngine.CachedOnlyCooldown);
+        Assert.False(_engine.IsCachedOnly);
+
+        for (var i = 0; i < 6 && !_engine.IsCachedOnly; i++)
+            _mpv.FinishCurrent();
+        Assert.True(_engine.IsCachedOnly);
+
+        PlayFor(PlaylistEngine.CachedOnlyCooldown);
+        Assert.True(_engine.IsCachedOnly);
+
+        PlayFor(PlaylistEngine.CachedOnlyCooldown);
+        Assert.False(_engine.IsCachedOnly);
+    }
+
+    [Fact]
+    public void While_leaning_on_the_cache_download_ahead_fetches_uncached_rotation_clips()
+    {
+        var ahead = new RecordingDownloadAhead();
+        _engine.DownloadAhead = ahead;
+        var cached = new HashSet<string> { "e", "f" };
+
+        LeanOnCache(cached);
+
+        var latest = ahead.Requests[^1];
+        Assert.NotEmpty(latest.Upcoming);
+        Assert.All(latest.Upcoming, c => Assert.DoesNotContain(c.Id, cached));
+    }
+
+    [Fact]
+    public void A_clip_that_lands_on_disk_joins_the_cached_rotation()
+    {
+        var cached = new HashSet<string> { "e", "f" };
+        LeanOnCache(cached);
+
+        cached.Add("g");
+        for (var i = 0; i < 4; i++)
+            _mpv.FinishCurrent();
+
+        Assert.Contains(_engine.Order, c => c.Id == "g");
+        Assert.Contains(_mpv.Loads, l => l.Url == @"C:\cache\g.mov");
+    }
+
     [Fact]
     public void A_success_resets_the_consecutive_failure_count()
     {

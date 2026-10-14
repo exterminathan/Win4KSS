@@ -18,8 +18,11 @@ namespace Win4K.Core.Playback;
 ///  * Idle while running is treated as a stall and recovers immediately (then with backoff).
 ///  * A watchdog skips a clip that makes no progress for <see cref="WatchdogTimeout"/>.
 ///  * A failed clip is retried once after <see cref="RetryDelay"/>; a second failure benches
-///    it for the session. <see cref="ConsecutiveFailureLimit"/> failures in a row switch the
-///    session to clips already on disk.
+///    it for the session. <see cref="ConsecutiveFailureLimit"/> failures in a row lean on clips
+///    already on disk, but only for a cooldown (<see cref="CachedOnlyCooldown"/>, doubling up to
+///    <see cref="MaxCachedOnlyCooldown"/>): every clip in rotation stays a candidate, and the
+///    cache is a convenience. Meanwhile download-ahead keeps fetching uncached rotation clips,
+///    which join the on-disk pool as they land.
 /// </summary>
 public sealed class PlaylistEngine : IDisposable
 {
@@ -36,6 +39,10 @@ public sealed class PlaylistEngine : IDisposable
     public static readonly TimeSpan RetryDelay = TimeSpan.FromSeconds(2);
     public static readonly TimeSpan TickInterval = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan MaxStallBackoff = TimeSpan.FromSeconds(30);
+
+    /// <summary>How long the first fallback to on-disk clips lasts before the network is tried again.</summary>
+    public static readonly TimeSpan CachedOnlyCooldown = TimeSpan.FromMinutes(2);
+    public static readonly TimeSpan MaxCachedOnlyCooldown = TimeSpan.FromMinutes(15);
 
     private readonly IMpvPlayer _player;
     private readonly TimeProvider _time;
@@ -57,7 +64,10 @@ public sealed class PlaylistEngine : IDisposable
     private readonly Dictionary<string, int> _sessionFailures = new(StringComparer.Ordinal);
     private readonly HashSet<string> _bad = new(StringComparer.Ordinal);
     private int _consecutiveFailures;
+    private readonly HashSet<string> _reportedUnhealthy = new(StringComparer.Ordinal);
     private bool _cachedOnly;
+    private DateTimeOffset? _cachedOnlyUntil;
+    private TimeSpan _cachedOnlyCooldown = CachedOnlyCooldown;
     private bool _noOfflineFallbackLogged;
 
     // ---- stall recovery ----
@@ -183,8 +193,11 @@ public sealed class PlaylistEngine : IDisposable
             _retries.Clear();
             _sessionFailures.Clear();
             _bad.Clear();
+            _reportedUnhealthy.Clear();
             _consecutiveFailures = 0;
             _cachedOnly = false;
+            _cachedOnlyUntil = null;
+            _cachedOnlyCooldown = CachedOnlyCooldown;
             _noOfflineFallbackLogged = false;
             _restartDue = null;
             _stallRestarts = 0;
@@ -227,6 +240,9 @@ public sealed class PlaylistEngine : IDisposable
             if (!_started || _disposed) return;
 
             var now = _time.GetUtcNow();
+
+            if (_cachedOnly && _cachedOnlyUntil is { } until && now >= until)
+                LeaveCachedOnlyLocked();
 
             if (_restartDue is { } due)
             {
@@ -311,6 +327,8 @@ public sealed class PlaylistEngine : IDisposable
             _current.Loaded = true;
             _consecutiveFailures = 0;
             _stallRestarts = 0;
+            if (_current.IsStream)
+                _cachedOnlyCooldown = CachedOnlyCooldown;
             _lastProgress = _time.GetUtcNow();
 
             var clip = _current.Clip;
@@ -492,6 +510,9 @@ public sealed class PlaylistEngine : IDisposable
             i--;
         }
 
+        if (_cachedOnly)
+            AddNewlyOfflineLocked();
+
         if (_order.Count == 0)
             return null;
 
@@ -531,7 +552,9 @@ public sealed class PlaylistEngine : IDisposable
         if (downloader is null)
             return;
 
-        var upcoming = PeekUpcomingLocked(DownloadAheadDepth);
+        // Leaning on the cache: the upcoming clips are already on disk, so fetch rotation clips
+        // that are not. That is what grows the pool back toward the whole rotation.
+        var upcoming = _cachedOnly ? PeekUncachedLocked(DownloadAheadDepth) : PeekUpcomingLocked(DownloadAheadDepth);
         if (upcoming.Count == 0)
             return;
 
@@ -556,9 +579,65 @@ public sealed class PlaylistEngine : IDisposable
         }
         else if (_bad.Add(clip.Id))
         {
-            Log.Warn($"Playlist: {clip} failed again ({why}); skipping it for the rest of this session. URL: {entry.Url}");
-            after.Add(() => ClipFailedForSession?.Invoke(this, clip));
+            Log.Warn($"Playlist: {clip} failed again ({why}); skipping it for now. URL: {entry.Url}");
+
+            // Benching is cleared when the network is tried again, so a clip can be benched twice
+            // in one session; ClipHealth counts sessions, so report it once.
+            if (_reportedUnhealthy.Add(clip.Id))
+                after.Add(() => ClipFailedForSession?.Invoke(this, clip));
         }
+    }
+
+    /// <summary>Uncached rotation clips after the one on screen, for download-ahead while leaning on the cache.</summary>
+    private List<Clip> PeekUncachedLocked(int count)
+    {
+        var picked = new List<Clip>(count);
+        if (_all.Count == 0)
+            return picked;
+
+        var currentId = (_current ?? _queued.FirstOrDefault())?.Clip.Id;
+        var start = currentId is null ? 0 : _all.FindIndex(c => c.Id == currentId) + 1;
+        for (var i = 0; i < _all.Count && picked.Count < count; i++)
+        {
+            var clip = _all[(start + i) % _all.Count];
+            if (!_bad.Contains(clip.Id) && !SafeIsOffline(clip))
+                picked.Add(clip);
+        }
+        return picked;
+    }
+
+    /// <summary>While leaning on the cache, rotation clips that have reached disk since join the pool.</summary>
+    private void AddNewlyOfflineLocked()
+    {
+        var inOrder = _order.Select(c => c.Id).ToHashSet(StringComparer.Ordinal);
+        foreach (var clip in _all)
+        {
+            if (!inOrder.Contains(clip.Id) && !_bad.Contains(clip.Id) && SafeIsOffline(clip))
+            {
+                _order.Add(clip);
+                Log.Info($"Playlist: {clip} is on disk now; added to the cached rotation ({_order.Count} clips)");
+            }
+        }
+    }
+
+    /// <summary>The cooldown is over: every clip in rotation is a candidate again.</summary>
+    private void LeaveCachedOnlyLocked()
+    {
+        var currentId = (_current ?? _queued.FirstOrDefault())?.Clip.Id;
+        var position = currentId is null ? -1 : _all.FindIndex(c => c.Id == currentId);
+
+        _cachedOnly = false;
+        _cachedOnlyUntil = null;
+        _order = _all;
+        _cursor = _all.Count == 0 ? 0 : (position + 1) % _all.Count;
+        _consecutiveFailures = 0;
+        _noOfflineFallbackLogged = false;
+
+        // The failures that got us here were most likely the network, not the clips.
+        _bad.Clear();
+        _sessionFailures.Clear();
+
+        Log.Info($"Playlist: trying the network again — back to the full rotation ({_all.Count} clips)");
     }
 
     private bool TrySwitchToCachedOnlyLocked()
@@ -578,10 +657,12 @@ public sealed class PlaylistEngine : IDisposable
             return false;
         }
 
-        Log.Error($"Playlist: {ConsecutiveFailureLimit} consecutive failures — switching to CACHED-ONLY rotation " +
-                  $"for the rest of this session ({offline.Count} clips on disk)");
+        Log.Error($"Playlist: {ConsecutiveFailureLimit} consecutive failures — playing the {offline.Count} clips on disk " +
+                  $"for {_cachedOnlyCooldown.TotalMinutes:0} min, then trying the network again");
 
         _cachedOnly = true;
+        _cachedOnlyUntil = _time.GetUtcNow() + _cachedOnlyCooldown;
+        _cachedOnlyCooldown = TimeSpan.FromTicks(Math.Min(_cachedOnlyCooldown.Ticks * 2, MaxCachedOnlyCooldown.Ticks));
         _order = offline;
         _cursor = 0;
         _consecutiveFailures = 0;
