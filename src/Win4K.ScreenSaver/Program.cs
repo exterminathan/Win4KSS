@@ -178,6 +178,20 @@ internal static class Program
     };
 
     /// <summary>
+    /// Whether this verb may ever check for app updates: a network call, a background timer, or
+    /// a dialog about one. Update checks are surfaced only in the clip browser — never in
+    /// <see cref="Verb.FullScreen"/> (/s), <see cref="Verb.Preview"/> (/p, the Settings dialog's
+    /// preview child), <see cref="Verb.Window"/> (/w, the saver itself, windowed) or
+    /// <see cref="Verb.StartNow"/> (/now). A screen saver that stalls on a network call or pops a
+    /// dialog over the desktop defeats the entire point of it; see CLAUDE.md "Never during the
+    /// saver". This is the single chokepoint every update-related code path is expected to
+    /// consult before doing anything — <see cref="Browser.BrowserForm"/> calls it when deciding
+    /// whether to construct an <see cref="Core.Updates.UpdateChecker"/> at all, rather than that
+    /// decision being implicit in "BrowserForm only ever runs for /c".
+    /// </summary>
+    internal static bool AllowsUpdateCheck(Verb verb) => verb == Verb.Configure;
+
+    /// <summary>
     /// Points WebView2 at the companion dir's WebView2Loader.dll. Must run before any other
     /// WebView2 API. Run from the one-file .scr with none of these (nor SetDllDirectory), the
     /// first WebView2 call fails with "Unable to load DLL 'WebView2Loader.dll'" and the browser

@@ -1,0 +1,21 @@
+{
+  "tag_name": "v1.10.0",
+  "name": "Win4KSS 1.10.0",
+  "body": "### Highlights\n- Faster start-up\n- Fixed a crash on multi-monitor setups",
+  "draft": false,
+  "prerelease": false,
+  "published_at": "2026-10-01T12:00:00Z",
+  "assets": [
+    {
+      "name": "Win4KSS-Setup-1.10.0.exe",
+      "size": 123456789,
+      "browser_download_url": "https://example.test/releases/Win4KSS-Setup-1.10.0.exe",
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "name": "Win4KSS-Setup-1.10.0.exe.sha256",
+      "size": 90,
+      "browser_download_url": "https://example.test/releases/Win4KSS-Setup-1.10.0.exe.sha256"
+    }
+  ]
+}

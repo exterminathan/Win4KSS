@@ -1,0 +1,15 @@
+{
+  "tag_name": "v2.0.0-beta.1",
+  "name": "Win4KSS 2.0.0 beta 1",
+  "body": "Try it out.",
+  "draft": false,
+  "prerelease": true,
+  "published_at": "2026-10-05T00:00:00Z",
+  "assets": [
+    {
+      "name": "Win4KSS-Setup-2.0.0-beta.1.exe",
+      "size": 1000,
+      "browser_download_url": "https://example.test/releases/Win4KSS-Setup-2.0.0-beta.1.exe"
+    }
+  ]
+}

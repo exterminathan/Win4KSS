@@ -36,6 +36,15 @@ public sealed class PortableSettings
     public bool? Shuffle { get; init; }
     public bool? UseTimeOfDay { get; init; }
 
+    /// <summary>
+    /// TODO(review): placed here, beside the other playback toggles, rather than its own
+    /// section — see AppSettings.AutoCheckForUpdates. Null means the file does not say (an
+    /// export written before this field existed, or any other file missing it), so import
+    /// leaves the setting alone; the last-check time/result are NOT part of this format at all
+    /// (AppSettings.LastUpdateCheckUtc and friends) — they describe this machine's own history.
+    /// </summary>
+    public bool? AutoCheckForUpdates { get; init; }
+
     public bool? CacheEnabled { get; init; }
     public double? CacheBudgetGb { get; init; }
 
@@ -139,6 +148,7 @@ public static class SettingsPortability
             MultiMonitorMode = settings.MultiMonitorMode,
             Shuffle = settings.Shuffle,
             UseTimeOfDay = settings.UseTimeOfDay,
+            AutoCheckForUpdates = settings.AutoCheckForUpdates,
             CacheEnabled = settings.CacheEnabled,
             CacheBudgetGb = settings.CacheBudgetGb,
             AutoAddSources = SortSources(settings.AutoAddSources),
@@ -218,7 +228,8 @@ public static class SettingsPortability
         Line(sb, 4, "quality", (model.Quality ?? VideoQuality.Auto).ToString());
         Line(sb, 4, "multiMonitorMode", (model.MultiMonitorMode ?? MultiMonitorMode.MainOnly).ToString());
         Raw(sb, 4, "shuffle", Bool(model.Shuffle ?? true));
-        Raw(sb, 4, "timeOfDay", Bool(model.UseTimeOfDay ?? true), last: true);
+        Raw(sb, 4, "timeOfDay", Bool(model.UseTimeOfDay ?? true));
+        Raw(sb, 4, "autoCheckForUpdates", Bool(model.AutoCheckForUpdates ?? true), last: true);
         sb.Append("  },\n");
 
         sb.Append("  \"cache\": {\n");
@@ -348,6 +359,7 @@ public static class SettingsPortability
                 MultiMonitorMode = Enum_<MultiMonitorMode>(Section(root, "playback"), "multiMonitorMode"),
                 Shuffle = Bool_(Section(root, "playback"), "shuffle"),
                 UseTimeOfDay = Bool_(Section(root, "playback"), "timeOfDay"),
+                AutoCheckForUpdates = Bool_(Section(root, "playback"), "autoCheckForUpdates"),
                 CacheEnabled = Bool_(Section(root, "cache"), "enabled"),
                 CacheBudgetGb = Section(root, "cache") is { } cache && cache.TryGetProperty("budgetGb", out var b) &&
                                 b.ValueKind == JsonValueKind.Number && b.TryGetDouble(out var gb) && double.IsFinite(gb) ? gb : null,
@@ -470,6 +482,7 @@ public static class SettingsPortability
         Diff("Multi-monitor", current.MultiMonitorMode, file.MultiMonitorMode);
         Diff("Shuffle", current.Shuffle, file.Shuffle, OnOff);
         Diff("Time of day", current.UseTimeOfDay, file.UseTimeOfDay, OnOff);
+        Diff("Check for updates automatically", current.AutoCheckForUpdates, file.AutoCheckForUpdates, OnOff);
         Diff("Cache", current.CacheEnabled, file.CacheEnabled, OnOff);
         if (file.CacheBudgetGb is { } budget && Math.Abs(budget - current.CacheBudgetGb) > 0.0001)
             changes.Add($"Cache limit: {Number(current.CacheBudgetGb)} → {Number(Math.Clamp(budget, 1, 100_000))} GB");
@@ -536,6 +549,7 @@ public static class SettingsPortability
         if (file.MultiMonitorMode is { } mode) settings.MultiMonitorMode = mode;
         if (file.Shuffle is { } shuffle) settings.Shuffle = shuffle;
         if (file.UseTimeOfDay is { } timeOfDay) settings.UseTimeOfDay = timeOfDay;
+        if (file.AutoCheckForUpdates is { } autoCheck) settings.AutoCheckForUpdates = autoCheck;
         if (file.CacheEnabled is { } enabled) settings.CacheEnabled = enabled;
 
         var lowered = false;
