@@ -26,16 +26,18 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
-      # Explicit and first, before anything else restores implicitly: Win4K.ScreenSaver.csproj
-      # pins RuntimeIdentifier=win-x64 unconditionally, but a GitHub-hosted runner's NuGet cache
-      # starts completely empty (unlike a dev machine's, warmed by months of prior restores) --
-      # letting `dotnet test`'s own implicit restore go first can resolve a graph that is missing
-      # the win-x64 runtime pack, which a later `dotnet publish` then fails to see as stale and
-      # doesn't re-resolve: NETSDK1112 ("runtime pack ... was not downloaded"), confirmed by
-      # actually running this workflow, not assumed from reading it.
+      # A solution-wide `dotnet restore` (no explicit -r) does NOT reliably pull the win-x64
+      # runtime pack into the restore graph even though Win4K.ScreenSaver.csproj pins
+      # RuntimeIdentifier=win-x64 statically -- confirmed by two consecutive CI failures after
+      # trying exactly that; a dev machine never hits this because its NuGet cache is already
+      # warmed from months of prior `-r win-x64` restores, which CI's starts without. Restoring
+      # the screensaver project directly, WITH an explicit -r win-x64, is what actually forces
+      # the runtime-pack restore path (the well-documented fix for NETSDK1112 in CI).
       - name: Restore
         shell: pwsh
-        run: dotnet restore Win4KScreensavers.slnx
+        run: |
+          dotnet restore Win4KScreensavers.slnx
+          dotnet restore src\Win4K.ScreenSaver\Win4K.ScreenSaver.csproj -r win-x64
 
       - name: Run tests
         shell: pwsh
