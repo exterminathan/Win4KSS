@@ -46,6 +46,11 @@ jobs:
       # scripts/build-installer.ps1 itself documents and relies on.
       - name: Fetch libmpv
         shell: pwsh
+        env:
+          # Raises fetch-libmpv.ps1's api.github.com call from the 60/hour unauthenticated,
+          # shared-IP limit (which actual CI runs confirmed gets exhausted by unrelated Actions
+          # traffic) to a 5,000/hour pool scoped to this job's own token.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./scripts/fetch-libmpv.ps1
 
       # Publishes (both the loose multi-file build and the separate System32 one-file .scr),
