@@ -18,6 +18,11 @@
        which is exactly the kind of silent failure this script exists to catch.
     4. Finds Inno Setup's ISCC.exe, installing Inno Setup via winget if it's missing.
     5. Compiles installer/Win4KSS.iss into installer/output/Win4KSS-Setup-<version>.exe.
+    6. Computes that installer's SHA-256 and writes it to a plain-text
+       Win4KSS-Setup-<version>.exe.sha256 sidecar (conventional sha256sum format), beside it in
+       installer/output/. Win4K.Core.Updates.UpdateInstaller (the in-app auto-updater) verifies a
+       downloaded installer against a hash published IN THE RELEASE, not GitHub's own per-asset
+       `digest` -- this is that hash. Attach both files to the GitHub Release when one is cut.
 
 .PARAMETER Version
     Installer/app version. Defaults to the <Version> already in Win4K.ScreenSaver.csproj.
@@ -207,3 +212,19 @@ if (-not (Test-Path -LiteralPath $outputExe)) {
 $outSizeMb = [math]::Round((Get-Item -LiteralPath $outputExe).Length / 1MB, 1)
 Write-Host ''
 Write-Host "Built $outputExe ($outSizeMb MB)" -ForegroundColor Green
+
+# ---- 6. checksum ----------------------------------------------------------------------------
+
+# The auto-updater (Win4K.Core.Updates.UpdateInstaller) refuses to run a downloaded installer
+# unless its SHA-256 matches a hash published IN THE RELEASE ITSELF -- not GitHub's own
+# per-asset `digest` field, which only proves the upload matches what was uploaded, not that the
+# right thing was uploaded in the first place. This is that independently-computed hash: a
+# plain-text sidecar in the conventional sha256sum format, built here (not by Inno) so it covers
+# the exact bytes ISCC just produced. Attach it to the GitHub Release alongside the installer
+# itself -- it is a second release asset, not something users download on its own.
+$hash = (Get-FileHash -LiteralPath $outputExe -Algorithm SHA256).Hash.ToLowerInvariant()
+$hashFile = "$outputExe.sha256"
+# LF, not CRLF: sha256sum's own format, and sha256sum -c reads either, but LF is the convention.
+[System.IO.File]::WriteAllText($hashFile, "$hash  $(Split-Path -Leaf $outputExe)`n")
+Write-Host "Wrote $hashFile" -ForegroundColor Green
+Write-Host "  $hash" -ForegroundColor Gray

@@ -180,7 +180,8 @@ source ids (`Rotation.SourcesOf`: `apple`, `aerial-manifests`, `archive-org`, `n
     "localFolders": [], "ffmpegPath": null,
     "autoAddSources": ["apple", "local"], "availableSources": ["apple", "aerial-manifests", "archive-org", "nasa", "local"],
     "previewCapabilities": { "ffmpegAvailable": true, "hoverClips": true, "ffmpegPath": "C:\\ffmpeg\\ffmpeg.exe" },
-    "shortcutDesktop": true, "shortcutStartMenu": false, "hotkey": "CTRL+ALT+S"
+    "shortcutDesktop": true, "shortcutStartMenu": false, "hotkey": "CTRL+ALT+S",
+    "autoCheckForUpdates": true
   },
   "sources": [
     { "id": "apple", "name": "Apple TV aerials", "clipCount": 114, "autoAdd": true },
@@ -208,6 +209,8 @@ source ids (`Rotation.SourcesOf`: `apple`, `aerial-manifests`, `archive-org`, `n
   `hotkey` is in the `.lnk` form `CTRL+ALT+S`; on save the host also accepts DOM
   `KeyboardEvent.code` names (`Ctrl+Alt+KeyS`, `Digit1`), requires at least one of
   Ctrl/Alt/Shift (else a `notice`), and `""`/null clears it.
+- `autoCheckForUpdates` (default `true`, see "Integration changes: auto-update" below) gates
+  only the automatic check on open; a manual `checkUpdates` always runs regardless.
 - The host re-sends `settings` after every `saveSettings`: render what comes back.
 
 ### `cacheStats`
@@ -373,3 +376,57 @@ CLI (no window): `Win4KSS.exe --export-settings FILE`, `Win4KSS.exe --import-set
 (FILE must directly follow the verb). Exit 0 ok, 1 bad usage / unreadable or invalid file (message on
 stderr), 2 unexpected error. Output goes to the parent console, or redirect it. CLI import does not download:
 pins that fit the budget are recorded and fetched the next time the browser opens.
+
+## Integration changes: auto-update
+
+Checks `https://api.github.com/repos/exterminathan/Win4KSS/releases/latest` (unauthenticated,
+no token embedded) for a newer release, throttled to once every 24 hours and persisted across
+restarts in `AppSettings` (`LastUpdateCheckUtc` and friends — **not** part of a settings export;
+see `SettingsPortability`'s doc comment). **Never checked outside the clip browser** — not in
+`/s`, `/p`, `/now`, or `/w` — see `Program.AllowsUpdateCheck` and CLAUDE.md's "Never during the
+saver". `Win4K.Core.Updates.*` (`SemVer`, `GitHubReleaseSource`, `UpdateChecker`,
+`UpdateInstaller`) does the comparison and the download/verify/launch; `BrowserBridge` is the
+only caller.
+
+Page -> host:
+
+| Message | Payload | Effect |
+|---|---|---|
+| `checkUpdates` | `{}` | Checks now, bypassing the 24h throttle (the toggle below does not gate this either). Answered with `updateStatus`. |
+| `installUpdate` | `{}` | Downloads the release's installer asset, verifies its size (against the API) and its SHA-256 (against a `.sha256` asset **published in the release**, not GitHub's own `digest` field — see `scripts/build-installer.ps1`), and — only if both pass — launches it (detached) and closes the browser window (see the hand-off note below). Streams `updateInstallProgress`. Any verification failure deletes the temp download and answers with an error `notice` plus a `Failed` progress message; nothing unverified is ever run. |
+
+Host -> page:
+
+```json
+{ "type": "updateStatus", "current": "1.1.0", "latest": "1.10.0", "available": true,
+  "notes": "### Highlights\n- Faster start-up", "checkedUtc": "2026-10-13T20:00:00Z", "error": null }
+```
+Sent after every check — automatic (on open, if `autoCheckForUpdates` and the throttle allows
+it) or manual (`checkUpdates`) — and replayed as-is on a page reload (`ready`) if one has
+already happened this run, so the About tab does not start blank. `latest`/`notes` are null
+when `available` is false. `error` is set on a fetch/parse failure and is never shown as a
+dialog for the automatic path — only a manual check or an install attempt surfaces one, via
+`notice`.
+
+```json
+{ "type": "updateInstallProgress", "stage": "Downloading", "fraction": 0.42, "bytesReceived": 42000000, "totalBytes": 100000000, "error": null }
+{ "type": "updateInstallProgress", "stage": "Failed", "fraction": null, "bytesReceived": 0, "totalBytes": null, "error": "The download's checksum does not match the one published with this release. It has not been run." }
+```
+`stage` is one of `Downloading|Verifying|Launching|Done|Failed`. TODO(review): this message's
+shape and name are this implementation's own call — the spec names only `updateStatus` itself
+as "one consolidated message" — added because the page needs visible progress during
+download/verification.
+
+**The hand-off hazard.** Clicking Install launches `Win4KSS-Setup-<version>.exe` detached, then
+the browser must close itself cleanly *before* that installer's own `[Run]` step
+(`install-scr.ps1`'s `Stop-NonSaverInstances`) reaches it — that step force-stops any
+`Win4KSS.exe`/`.scr` not running as `/s`, which is exactly what this browser process is. On a
+verified install, `BrowserBridge` calls the new `IBrowserHost.PrepareForInstallerHandoff()`;
+`BrowserForm` implements it as `Close()`, which runs the ordinary `FormClosing` → `Shutdown()`
+path (flush settings, dispose the download queue/cache/previews, close the WebView2) — the
+exact same sequence a normal close already uses, not a new one.
+
+**Settings.** `autoCheckForUpdates` (default `true`) lives in `settings.values` (see above) and
+travels in a settings export's `playback` section, tolerant of files written before it existed.
+`LastUpdateCheckUtc`/`LastUpdateLatestVersion`/`LastUpdateAvailable`/`LastUpdateNotes` are
+**not** exported — they describe this machine's own check history, not a portable choice.

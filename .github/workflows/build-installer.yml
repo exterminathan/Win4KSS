@@ -38,17 +38,25 @@ jobs:
         run: ./scripts/fetch-libmpv.ps1
 
       # Publishes (both the loose multi-file build and the separate System32 one-file .scr),
-      # sanity-checks the result, finds or installs Inno Setup, and compiles the installer --
-      # the exact same script a human runs locally, so CI can never silently diverge from it.
+      # sanity-checks the result, finds or installs Inno Setup, compiles the installer, and
+      # (step 6) writes a plain-text .sha256 sidecar of the compiled installer -- the exact same
+      # script a human runs locally, so CI can never silently diverge from it.
       - name: Build installer
         shell: pwsh
         run: ./scripts/build-installer.ps1
 
+      # Both files ship in one artifact so they land together: the auto-updater
+      # (Win4K.Core.Updates.UpdateInstaller) verifies a downloaded installer against the
+      # .sha256's hash -- published IN THE RELEASE, not GitHub's own per-asset `digest` -- so
+      # when this build is attached to a GitHub Release, the .sha256 goes up as its own second
+      # asset right alongside the .exe, not just kept as a CI-internal artifact.
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
           name: Win4KSS-installer
-          path: installer/output/*.exe
+          path: |
+            installer/output/*.exe
+            installer/output/*.sha256
           retention-days: 30
           if-no-files-found: error
 
