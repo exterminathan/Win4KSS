@@ -172,6 +172,9 @@ Filename: "powershell.exe"; \
     StatusMsg: "Registering {#MyAppName} as a screen saver..."; \
     Flags: runhidden waituntilterminated; BeforeInstall: ImportSettingsIfChosen
 Filename: "{app}\{#MyAppExeName}"; Parameters: "/c"; Description: "Open the {#MyAppName} clip browser now"; Flags: postinstall skipifsilent nowait unchecked
+; A silent run is the in-app updater (UpdateInstaller.SilentArguments), which closed the clip
+; browser to make way: bring it back, as the user, once everything above has run.
+Filename: "{app}\{#MyAppExeName}"; Parameters: "/c"; Flags: nowait runasoriginaluser; Check: WizardSilent
 
 [UninstallRun]
 ; Runs as the FIRST step of uninstall, before Setup removes any files registered in [Files] --

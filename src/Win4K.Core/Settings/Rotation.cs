@@ -8,10 +8,10 @@ public enum RotationFallback
     /// <summary>The rotation itself: <see cref="AppSettings.RotationKeys"/> matched at least one clip.</summary>
     None = 0,
 
-    /// <summary>The rotation matched nothing, so every clip already in the cache.</summary>
+    /// <summary>Nothing in the rotation and no Apple aerials known, so every clip already in the cache.</summary>
     Cached = 1,
 
-    /// <summary>Nothing in the rotation or the cache, so Apple's aerials.</summary>
+    /// <summary>The rotation matched nothing, so Apple's aerials.</summary>
     Apple = 2,
 
     /// <summary>Not even Apple: the whole catalogue, rather than a black screen.</summary>
@@ -161,10 +161,12 @@ public static class Rotation
     /// The clips the saver plays, in catalogue order (the playlist shuffles them):
     /// <list type="number">
     ///   <item>the rotation — catalogue clips whose key is in <see cref="AppSettings.RotationKeys"/>;</item>
-    ///   <item>if that is empty, every remote clip already cached at the current quality;</item>
-    ///   <item>if nothing is cached, Apple's aerials;</item>
-    ///   <item>if there are none, the whole catalogue.</item>
+    ///   <item>if that is empty, Apple's aerials;</item>
+    ///   <item>if there are none (no manifest), every remote clip already cached;</item>
+    ///   <item>if nothing is cached, the whole catalogue.</item>
     /// </list>
+    /// The cache never decides what plays while there is anything else: it is a convenience,
+    /// and a cached-first fallback replayed the same few clips forever.
     /// Clips with no playable URL are dropped at each step.
     /// </summary>
     /// <param name="isCached">Whether a playable clip is on disk; null when there is no cache.</param>
@@ -185,16 +187,16 @@ public static class Rotation
         if (rotation.Count > 0)
             return Result(rotation, RotationFallback.None);
 
+        var apple = Playable(catalogue.Where(c => SourceOf(c) == AppleAerialSource.SourceId));
+        if (apple.Count > 0)
+            return Result(apple, RotationFallback.Apple);
+
         if (isCached is not null)
         {
             var cached = Playable(catalogue.Where(c => !c.IsLocal)).Where(p => isCached(p.Clip)).ToList();
             if (cached.Count > 0)
                 return Result(cached, RotationFallback.Cached);
         }
-
-        var apple = Playable(catalogue.Where(c => SourceOf(c) == AppleAerialSource.SourceId));
-        if (apple.Count > 0)
-            return Result(apple, RotationFallback.Apple);
 
         return Result(Playable(catalogue), RotationFallback.Everything);
     }

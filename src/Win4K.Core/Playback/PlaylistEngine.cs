@@ -750,11 +750,12 @@ public sealed class PlaylistEngine : IDisposable
         {
             var target = ClipHeuristics.Now(now);
 
-            // Stable OrderBy keeps the shuffle intact inside each group. Clips explicitly
-            // marked for the wrong half of the day sink; unmarked clips (110 of Apple's 114)
-            // sit in the middle and are effectively untouched.
+            // Only clips marked for the wrong half of the day sink; matching and unmarked clips
+            // stay shuffled together. Promoting matches to the front made the handful of labelled
+            // clips (4 of Apple's 114) open every single session. Stable, so the shuffle survives.
+            var wrong = target == TimeOfDay.Day ? TimeOfDay.Night : target == TimeOfDay.Night ? TimeOfDay.Day : (TimeOfDay?)null;
             ordered = ordered
-                .OrderBy(c => c.TimeOfDay == target ? 0 : c.TimeOfDay is TimeOfDay.Day or TimeOfDay.Night ? 2 : 1)
+                .OrderBy(c => wrong is not null && c.TimeOfDay == wrong ? 1 : 0)
                 .ToList();
         }
 

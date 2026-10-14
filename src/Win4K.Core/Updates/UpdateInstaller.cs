@@ -47,9 +47,16 @@ public sealed class UpdateInstaller
     {
         _http = options?.Http ?? Http.Client;
         _progressInterval = options?.ProgressInterval ?? TimeSpan.FromMilliseconds(200);
-        _launch = options?.Launch ?? (path => Process.Start(new ProcessStartInfo(path) { UseShellExecute = true }));
+        _launch = options?.Launch ?? (path => Process.Start(new ProcessStartInfo(path, SilentArguments) { UseShellExecute = true }));
         _tempDirectory = options?.TempDirectory ?? Path.GetTempPath();
     }
+
+    /// <summary>
+    /// An update is not a fresh install: no wizard pages, just Inno's progress window after the
+    /// one UAC prompt. Tasks chosen at the original install are reused (Inno's UsePreviousTasks),
+    /// and installer/Win4KSS.iss reopens the clip browser after a silent run.
+    /// </summary>
+    public const string SilentArguments = "/SILENT /SUPPRESSMSGBOXES /NORESTART";
 
     /// <summary>The installer asset: the one whose name ends in .exe and contains "Setup" (see installer/Win4KSS.iss's OutputBaseFilename).</summary>
     public static ReleaseAsset? FindInstallerAsset(ReleaseInfo release) =>

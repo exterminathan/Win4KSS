@@ -500,12 +500,24 @@ public class SettingsV2Tests : IDisposable
     }
 
     [Fact]
-    public void An_empty_rotation_falls_back_to_cached_clips()
+    public void An_empty_rotation_falls_back_to_apple_even_with_clips_cached()
     {
         var settings = Migrated();
         var cachedUrl = new Uri(I2.Urls.Uhd4KSdr!);
 
         var selection = Rotation.Select(settings, Catalogue, clip => clip.Url == cachedUrl);
+
+        // The cache is a convenience, never the pool: cached-first replayed the same few clips.
+        Assert.Equal(RotationFallback.Apple, selection.Fallback);
+        Assert.Equal(Keys(A1, A2), Sorted(selection.Clips.Select(c => c.Id)));
+    }
+
+    [Fact]
+    public void Without_apple_an_empty_rotation_falls_back_to_cached_clips()
+    {
+        var cachedUrl = new Uri(I2.Urls.Uhd4KSdr!);
+
+        var selection = Rotation.Select(Migrated(), [I1, I2, N1], clip => clip.Url == cachedUrl);
 
         Assert.Equal(RotationFallback.Cached, selection.Fallback);
         Assert.Equal([I2.Key], selection.Clips.Select(c => c.Id));

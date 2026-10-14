@@ -64,8 +64,29 @@ public class PlaylistOrderTests
         var settings = new AppSettings { Shuffle = false, UseTimeOfDay = true };
         var order = PlaylistEngine.BuildOrder(clips, settings, Midday);
 
-        // Matching first, unknown in the middle, wrong-time last.
-        Assert.Equal(["day1", "day2", "unknown1", "night1", "night2"], order.Select(c => c.Id));
+        // Wrong-time last; matching and unknown keep their (here: source) order together.
+        Assert.Equal(["day1", "unknown1", "day2", "night1", "night2"], order.Select(c => c.Id));
+    }
+
+    [Fact]
+    public void The_few_clips_labelled_for_now_do_not_open_every_session()
+    {
+        // The real catalogue: 4 of ~139 rotation clips say "Day". Promoting them made one of the
+        // same four open every launch, however many times Start now was pressed.
+        var clips = Enumerable.Range(0, 135).Select(i => Make("u" + i))
+            .Concat(Enumerable.Range(0, 4).Select(i => Make("day" + i, TimeOfDay.Day)))
+            .ToList();
+        var settings = new AppSettings { Shuffle = true, UseTimeOfDay = true };
+
+        var dayFirst = Enumerable.Range(0, 200)
+            .Count(seed => PlaylistEngine.BuildOrder(clips, settings, Midday, new Random(seed))[0].TimeOfDay == TimeOfDay.Day);
+        var distinctOpeners = Enumerable.Range(0, 200)
+            .Select(seed => PlaylistEngine.BuildOrder(clips, settings, Midday, new Random(seed))[0].Id)
+            .Distinct().Count();
+
+        // Fair odds are 4/139 ≈ 3%; the old ordering made it 100%.
+        Assert.True(dayFirst < 30, $"a Day clip opened {dayFirst} of 200 sessions");
+        Assert.True(distinctOpeners > 50, $"only {distinctOpeners} different clips opened 200 sessions");
     }
 
     [Fact]
@@ -81,7 +102,7 @@ public class PlaylistOrderTests
         var settings = new AppSettings { Shuffle = false, UseTimeOfDay = true };
         var order = PlaylistEngine.BuildOrder(clips, settings, Midnight);
 
-        Assert.Equal(["night1", "unknown1", "day1"], order.Select(c => c.Id));
+        Assert.Equal(["unknown1", "night1", "day1"], order.Select(c => c.Id));
     }
 
     [Fact]
