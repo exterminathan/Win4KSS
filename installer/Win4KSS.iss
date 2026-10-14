@@ -182,6 +182,10 @@ const
   // the runtime at launch (Win4K.ScreenSaver\Program.cs, WebView2RuntimeUrl) -- kept in sync by
   // hand since Inno's preprocessor can't read a C# source file.
   WebView2DownloadUrl = 'https://go.microsoft.com/fwlink/p/?LinkId=2124703';
+  // The general release page, not a version-pinned installer link: it always lists the current
+  // ".NET Desktop Runtime" download for whatever Windows/architecture the visitor is on, so this
+  // does not go stale across .NET versions the way a direct installer URL would.
+  DotNetDownloadUrl = 'https://dotnet.microsoft.com/download/dotnet/10.0';
 
 var
   // Set once in InitializeSetup and read everywhere else -- {app} is fixed (DisableDirPage=yes),
@@ -202,6 +206,30 @@ begin
     RegQueryStringValue(HKCU, 'SOFTWARE\Microsoft\EdgeUpdate\Clients\' + WebView2ClientGuid, 'pv', Version);
 end;
 
+// {#MyAppName} is SelfContained=false (Win4K.ScreenSaver.csproj): unlike WebView2, which only
+// gates the clip browser, a missing .NET Desktop Runtime means NOTHING runs after installing --
+// not /c, not /w, not even the screen saver itself. {commonpf64} (not {app}: not yet valid here,
+// see DetectExistingInstall's own comment) is where the x64 runtime always installs regardless
+// of this installer's own bitness, since it is a per-machine, not per-app, install location.
+// Checking for a 10.* subfolder under the Windows Desktop shared framework -- rather than
+// shelling out to `dotnet --list-runtimes`, which assumes dotnet.exe is even on PATH, exactly
+// the case this exists to catch on a bare machine -- is the same directory Microsoft's own
+// runtime installer documents writing to.
+function IsDotNetDesktopRuntimeInstalled(): Boolean;
+var
+  FindRec: TFindRec;
+  BasePath: String;
+begin
+  Result := False;
+  BasePath := ExpandConstant('{commonpf64}\dotnet\shared\Microsoft.WindowsDesktop.App');
+  if not DirExists(BasePath) then Exit;
+  if FindFirst(BasePath + '\10.*', FindRec) then
+  begin
+    Result := True;
+    FindClose(FindRec);
+  end;
+end;
+
 // True when there is something here for the settings CLI to export, or for an import to
 // matter to: either a previous install's exe at the (locked) {app} path -- whether put there
 // by this installer or by running scripts/install-scr.ps1 by hand, which targets the very same
@@ -213,10 +241,16 @@ begin
   Result := not ExistingInstallDetected;
 end;
 
+// Called from InitializeSetup, where {app} is NOT YET VALID -- Inno's docs are explicit that
+// {app} cannot be expanded there (it throws "An attempt was made to expand the 'app' constant
+// before it was initialized", 100% reproducibly, on every single run, regardless of DisableDirPage).
+// DefaultDirName is {localappdata}\Programs\{#MyAppName} and the dir page is disabled, so {app}
+// always equals that literal path anyway -- spelling it out here, instead of via {app}, is exactly
+// equivalent and safe at this point in the sequence.
 function DetectExistingInstall(): Boolean;
 begin
   Result :=
-    FileExists(ExpandConstant('{app}\{#MyAppExeName}')) or
+    FileExists(ExpandConstant('{localappdata}\Programs\{#MyAppName}\{#MyAppExeName}')) or
     FileExists(ExpandConstant('{localappdata}\Win4KScreensavers\settings.json'));
 end;
 
@@ -253,6 +287,28 @@ begin
 
   ExistingInstallDetected := DetectExistingInstall();
   ImportSettingsFile := '';
+
+  // Unlike WebView2 below, this one can block: SelfContained=false means nothing in
+  // {#MyAppName} runs without it, not even the screen saver itself, not a confusing "one
+  // feature doesn't work" moment. Windows 11 does not bundle this either, and Windows Update
+  // does not deliver it the way it eventually does WebView2 -- confirmed needed by hand on a
+  // bare Windows 10 box. Choosing to continue anyway is still allowed: maybe it is about to be
+  // installed by other means, or this is a scripted/offline deployment that handles it
+  // separately.
+  if not IsDotNetDesktopRuntimeInstalled() then
+    if MsgBox(
+      '{#MyAppName} needs the free .NET Desktop Runtime (x64), which this PC does not appear ' +
+      'to have. Without it, nothing in {#MyAppName} will run after installing -- not the clip ' +
+      'browser, not the screen saver itself.' +
+      Chr(13) + Chr(10) + Chr(13) + Chr(10) +
+      'Get it from:' + Chr(13) + Chr(10) + DotNetDownloadUrl +
+      Chr(13) + Chr(10) + Chr(13) + Chr(10) +
+      'Continue installing anyway? Choose No to cancel and install the runtime first.',
+      mbError, MB_YESNO) = IDNO then
+    begin
+      Result := False;
+      Exit;
+    end;
 
   // Not a blocker: the screen saver itself needs no WebView2 at all, only the clip browser
   // (/c), and Win4KSS already detects this itself and offers the same download link at that
