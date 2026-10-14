@@ -198,7 +198,7 @@ public sealed class BrowserBridge : IDisposable
         // BrowserForm constructed one, which it only does for the clip browser. The toggle
         // (default on) governs this automatic path only; a manual "Check now" bypasses it.
         if (_updateChecker is not null && _settings.AutoCheckForUpdates)
-            _ = CheckForUpdatesAsync(force: false);
+            Background = CheckForUpdatesAsync(force: false);
     }
 
     /// <summary>The page is navigating away (reload, crash). Nothing is posted until its next <c>ready</c>.</summary>
