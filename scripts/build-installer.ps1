@@ -114,6 +114,21 @@ foreach ($name in $expectedFiles) {
     }
 }
 
+# The separate single-managed-file, no-native-DLLs build for the System32 "systemscr" Task
+# (Win4K.ScreenSaver.csproj's nested system32 publish, NativeDependencies.cs) -- produced by
+# the same `dotnet publish` call above, so a missing file here means that build broke, not
+# that this script forgot to ask for it.
+$system32ScrPath = Join-Path $publishDir 'system32\Win4KSS.scr'
+if (-not (Test-Path -LiteralPath $system32ScrPath)) {
+    throw "$system32ScrPath is missing after publish. The System32 build target isn't producing it."
+}
+$system32ScrSizeMb = [math]::Round((Get-Item -LiteralPath $system32ScrPath).Length / 1MB, 1)
+Write-Host "publish\system32\Win4KSS.scr: $system32ScrSizeMb MB" -ForegroundColor Green
+if ($system32ScrSizeMb -gt 10) {
+    throw "publish\system32\Win4KSS.scr is $system32ScrSizeMb MB -- too large for a managed-only, " +
+          "no-native-DLLs build. It may have picked up libmpv-2.dll/WebView2Loader.dll by mistake."
+}
+
 $exePath              = Join-Path $publishDir 'Win4KSS.exe'
 $publishedLibmpvPath  = Join-Path $publishDir 'libmpv-2.dll'
 

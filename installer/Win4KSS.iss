@@ -7,7 +7,10 @@
 ; positive on another machine (Windows Defender scans the same file clean). Publish now produces
 ; ordinary loose files, so every one of them is listed in [Files] below and has to land together
 ; in {app} -- see scripts/build-installer.ps1, which publishes before compiling this script and
-; verifies the real output list rather than assuming it.
+; verifies the real output list rather than assuming it. A second, separate single-managed-file
+; build with no native DLLs (publish\system32\{#MyAppScrName}) backs the "systemscr" Task below
+; for the same reason loose files stay loose everywhere else: System32 is on every process's DLL
+; search path, so copying libmpv-2.dll/WebView2Loader.dll there was rejected too.
 ;
 ; Deliberately does NOT reimplement the registry/shortcut/SPI_SETSCREENSAVEACTIVE work that
 ; scripts/install-scr.ps1 already does and already got right (see CLAUDE.md -- a shortcut
@@ -78,19 +81,16 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-; TODO(review): disabled (unchecked, and GetInstallScrArgs below ignores it) rather than removed
-; outright, so the wizard page layout and wording are ready to flip back on if System32 mode
-; ever gains real support for a loose multi-file publish. Right now install-scr.ps1 refuses its
-; System32 copy mode outright -- see its own comment -- because copying only the .scr there,
-; without Win4K.Core.dll/libmpv-2.dll/WebView2Loader.dll beside it, would produce a screen saver
-; Windows lists in the dropdown but cannot actually run. Checking this box today would make the
-; install-scr.ps1 [Run] step below throw before it ever reaches shortcut creation, which Inno
-; does not surface as an install failure -- i.e. silently no registration at all, not just no
-; System32 copy. -UserScope (what every install now always uses, see GetInstallScrArgs) is a
-; fully working install in every other respect (see install-scr.ps1's own doc comment); the only
-; thing it gives up is appearing in the Screen Saver Settings *dropdown*, which already was an
-; "Outstanding" manual step per CLAUDE.md, not something this installer ever guaranteed.
-Name: "systemscr"; Description: "Make {#MyAppName} available in Windows' Screen Saver Settings (not currently supported by this build)"; GroupDescription: "Screen saver registration:"; Flags: unchecked
+; Checked by default: this is the one thing most people installing a screen saver actually
+; want -- to see it in the normal Windows screen saver picker. install-scr.ps1 backs this with
+; a separate single-managed-file, no-native-DLLs build (publish\system32\{#MyAppScrName},
+; staged below) that resolves libmpv/WebView2 from the user-scope companion dir at its own
+; startup, rather than copying those DLLs into System32 itself -- System32 is on every
+; process's DLL search path, and a name like WebView2Loader.dll is shared across every
+; WebView2 app on the machine, so our copies landing there could get picked up by unrelated
+; software. Unchecking falls back to install-scr.ps1 -UserScope, still a fully working install
+; in every other respect (see that script's own doc comment).
+Name: "systemscr"; Description: "Make {#MyAppName} available in Windows' Screen Saver Settings (recommended)"; GroupDescription: "Screen saver registration:"
 ; TODO(review): left unchecked on purpose -- changing someone's active screen saver and idle
 ; timeout as a side effect of installing software felt presumptuous. Flip the default, or the
 ; wording, if that is wrong for how this actually gets shared.
@@ -135,6 +135,12 @@ Source: "..\publish\Win4K.Core.pdb"; DestDir: "{app}"; Flags: ignoreversion
 ; later, or after a Windows feature update resets screen saver state).
 Source: "..\scripts\install-scr.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\docs\THIRD-PARTY-NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion isreadme
+; The separate single-managed-file, no-native-DLLs build for the System32 copy (see the
+; "systemscr" Task above) -- staged at {app}\system32\ so install-scr.ps1, invoked below with
+; -PublishDir "{app}", finds it at the same relative path it uses from a repo clone's
+; publish\system32\. Not placed directly under {app}: it would collide with the loose build's
+; own {#MyAppScrName} right above.
+Source: "..\publish\system32\{#MyAppScrName}"; DestDir: "{app}\system32"; Flags: ignoreversion
 
 [Icons]
 ; Per-user Start Menu entries, to match everything else this app touches (settings, cache,
@@ -264,17 +270,13 @@ begin
 end;
 
 // Builds the extra arguments for the install-scr.ps1 [Run] step above from the Tasks page.
-//
-// -UserScope is now unconditional: see the "systemscr" Task's own comment in [Tasks] above.
-// install-scr.ps1 refuses outright when asked to do a System32 install from a loose multi-file
-// publish, and Inno does not surface a [Run] entry's nonzero exit as an install failure -- so
-// ignoring the task here (rather than reading it) is what keeps every install's shortcuts and
-// companion exe actually getting created, instead of the whole step silently doing nothing.
 function GetInstallScrArgs(Param: String): String;
 var
   Args: String;
 begin
-  Args := '-UserScope';
+  Args := '';
+  if not WizardIsTaskSelected('systemscr') then
+    Args := Args + ' -UserScope';
   if WizardIsTaskSelected('setdefault') then
     Args := Args + ' -SetAsDefault -TimeoutMinutes 10';
   Result := Trim(Args);

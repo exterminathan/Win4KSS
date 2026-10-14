@@ -3,9 +3,13 @@
     Builds, installs and registers Win4KSS as a Windows screen saver.
 
 .DESCRIPTION
-    Publishes a single-file build, copies the .scr into System32 (which requires
-    elevation, and is the only place Windows looks when populating the screen saver
-    dropdown), and creates the walk-away shortcut with its hotkey.
+    Publishes the app (a loose multi-file build, plus a separate single-managed-file,
+    no-native-DLLs build under publish\system32\ -- see Win4K.ScreenSaver.csproj and
+    NativeDependencies.cs). Always installs the loose build into the user-scope companion dir
+    at %LOCALAPPDATA%\Programs\Win4KSS; without -UserScope, ALSO copies the system32 build's
+    .scr into System32 (needs elevation -- the only place Windows looks when populating the
+    screen saver dropdown) and points SCRNSAVE.EXE at it instead. Either way, creates the
+    walk-away shortcut with its hotkey, targeting the user-scope companion .exe.
 
     The shortcut points at /now rather than /s on purpose. /now asks Windows to start the
     configured screen saver, which is the only route that honours "On resume, display logon
@@ -37,7 +41,8 @@
     Hotkey for the shortcut, in .lnk form. Default CTRL+ALT+S. Pass "" for none.
 
 .PARAMETER UserScope
-    Install to %LOCALAPPDATA%\Programs\Win4KSS instead of System32, with no elevation.
+    Skip the System32 copy; install only to %LOCALAPPDATA%\Programs\Win4KSS, with no
+    elevation.
 
     Windows runs whatever .scr path HKCU points at, so this is a fully working install —
     the only thing it gives up is appearing in the Screen Saver Settings *dropdown*, which
@@ -45,7 +50,8 @@
     /c and /p from the Settings dialog) behaves identically.
 
 .PARAMETER Uninstall
-    Remove the .scr and the shortcuts (and any leftover Win4KAerial install).
+    Remove the System32 .scr (if present), the user-scope companion dir, and the shortcuts
+    (and any leftover Win4KAerial install).
 
 .EXAMPLE
     .\scripts\install-scr.ps1 -UserScope          # no elevation needed
@@ -124,7 +130,10 @@ function Sync-CompanionFiles {
     #
     # Skips the .scr/.exe themselves: the code below has its own hard-link/self-reference
     # handling for those two and must not be fought over them here. Skips *.pdb: those are
-    # symbols, not something the running app needs beside it. Removes stale files that are in
+    # symbols, not something the running app needs beside it. Skips publish\system32\ entirely:
+    # that is the separate one-file, no-native-DLLs build for the System32 copy (see below) --
+    # it belongs beside nothing, and copying it into the companion dir would just confuse the
+    # "which Win4KSS.scr is this" question with no benefit. Removes stale files that are in
     # $To but not in $From, so a DLL a past build needed and this one does not does not linger
     # across upgrades -- but ONLY among .dll/.json files and anything under runtimes\, i.e. the
     # file shapes a publish actually produces. $companionDir is NOT always publish-output-only:
@@ -142,7 +151,10 @@ function Sync-CompanionFiles {
 
     $wanted = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     Get-ChildItem -LiteralPath $From -Recurse -File |
-        Where-Object { $_.Extension -ine '.pdb' -and ($skipNames -notcontains $_.Name) } |
+        Where-Object {
+            $_.Extension -ine '.pdb' -and ($skipNames -notcontains $_.Name) -and
+            -not $_.FullName.Substring($fromFull.Length + 1).StartsWith('system32\', [StringComparison]::OrdinalIgnoreCase)
+        } |
         ForEach-Object {
             $rel  = $_.FullName.Substring($fromFull.Length + 1)
             $dest = Join-Path $To $rel
@@ -406,29 +418,18 @@ if (-not $SkipBuild) {
     }
 }
 
-$source = Join-Path $publishDir $scrName
+# Two different .scr builds, picked by install scope. -UserScope installs the ordinary loose
+# multi-file build (needs Sync-CompanionFiles below for its sibling DLLs). System32 mode
+# installs publish\system32\Win4KSS.scr instead: a separate single-managed-file build with no
+# native DLLs bundled (app side; see NativeDependencies.cs), which resolves libmpv-2.dll and
+# WebView2Loader.dll from the companion dir at its own startup -- deliberately, so System32
+# never gains a copy of either. WebView2Loader.dll especially is a name shared across every
+# WebView2 app on the machine; putting our copy on System32's DLL search path, where any
+# process can find it, was rejected for exactly that reason. Either way $companionDir gets the
+# full loose build (below, unconditional) -- the System32 .scr is dead without it.
+$source = if ($UserScope) { Join-Path $publishDir $scrName } else { Join-Path (Join-Path $publishDir 'system32') $scrName }
 if (-not (Test-Path $source)) {
     throw "$source not found. Run without -SkipBuild."
-}
-
-# System32 mode needs a single-file build: it copies only the .scr there, and a loose
-# multi-file publish's sibling DLLs (Win4K.Core.dll, libmpv-2.dll, WebView2Loader.dll, ...)
-# would simply be missing from System32 -- Windows would list it in the dropdown and then fail
-# to run it. Refuse up front with a clear reason rather than silently installing something
-# broken. -UserScope is unaffected: Sync-CompanionFiles below mirrors every sibling file from
-# $publishDir into the companion dir, so it keeps working for a loose publish too.
-# TODO(review): if System32 support for a loose multi-file build is ever wanted, this would need
-# to copy every sibling file alongside the .scr into System32 too, not just refuse.
-if (-not $UserScope) {
-    if (-not (Test-SingleFilePublish -Dir $publishDir -ExeName "$appName.exe")) {
-        throw "System32 install needs a single-file publish, but '$publishDir' is a loose " +
-              "multi-file build (Win4K.Core.dll and/or libmpv-2.dll sit beside $appName.exe). " +
-              "Copying just $scrName into System32 without those sibling files would produce a " +
-              "screen saver Windows cannot actually run. Use -UserScope instead -- it is a fully " +
-              "working install in every other respect (idle trigger, resume lock, the hotkey, " +
-              "/c and /p from the Settings dialog); the only thing it gives up is appearing in " +
-              "the Screen Saver Settings dropdown, which only ever lists System32."
-    }
 }
 
 # ---- install ----------------------------------------------------------------------------
@@ -459,14 +460,14 @@ if ($installedFull -and $sourceFull -ieq $installedFull) {
     Write-Host "  installed: $installed" -ForegroundColor Green
 }
 
-# System32 mode already refused above unless the publish is single-file, in which case there
-# is nothing else to mirror -- everything the .scr needs is bundled inside it. -UserScope is
-# the one that can be a loose multi-file publish, and its companion dir needs every sibling
-# file from $publishDir (DLLs, runtimes\, the two .json files) or the .scr/.exe just placed
-# cannot actually run. No-op when $publishDir already IS $companionDir (Inno's own case).
-if ($UserScope) {
-    Sync-CompanionFiles -From $publishDir -To $companionDir
-}
+# Unconditional, regardless of install scope: the companion .exe is what every shortcut
+# targets (the .scr itself can't be, see the header comment), in BOTH System32 and -UserScope
+# mode, and it needs its sibling DLLs (Win4K.Core.dll, libmpv-2.dll, WebView2Loader.dll,
+# runtimes\, both .json files) to actually run /now when clicked -- a loose multi-file publish
+# does not bundle them into the exe itself. Previously scoped to -UserScope only, which missed
+# that System32 mode populates the SAME companion dir for its shortcut target. No-op when
+# $publishDir already IS $companionDir (Inno's own case).
+Sync-CompanionFiles -From $publishDir -To $companionDir
 
 # Companion .exe for the shortcut to target. A hard link costs no extra disk when both
 # paths are on the same volume, which they normally are; fall back to a copy otherwise.
@@ -483,8 +484,16 @@ if ($companionIsSourceExe) {
 } else {
     if (Test-Path $companionExe) { Remove-Item $companionExe -Force }
 
+    # Hard-linking against $installed only makes sense in -UserScope: there $installed IS the
+    # loose build's own .scr, byte-identical to $sourceExe (same apphost, renamed) -- a free
+    # link, not a copy. In System32 mode $installed is the unrelated one-file build (see the
+    # $source comment above): linking against it would make the companion .exe silently BE
+    # that build instead of the loose one Sync-CompanionFiles just put its DLLs beside, and a
+    # version mismatch waiting to happen the day the two builds move independently. Always copy
+    # from $sourceExe there instead -- it is small, so losing the free-link optimisation for
+    # that one case costs nothing.
     $linked = $false
-    if ([IO.Path]::GetPathRoot($companionExe) -eq [IO.Path]::GetPathRoot($installed)) {
+    if ($UserScope -and [IO.Path]::GetPathRoot($companionExe) -eq [IO.Path]::GetPathRoot($installed)) {
         try {
             New-Item -ItemType HardLink -Path $companionExe -Target $installed -ErrorAction Stop | Out-Null
             $linked = $true
