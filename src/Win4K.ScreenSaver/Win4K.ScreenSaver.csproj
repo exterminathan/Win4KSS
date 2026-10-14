@@ -19,6 +19,10 @@
     <Product>Win4KSS</Product>
     <Company>Win4KSS</Company>
     <Description>Win4KSS — 4K video screen saver</Description>
+    <!-- Baked into Win4KSS.exe/.scr's PE resources. Explorer, the taskbar, Alt-Tab and any
+         shortcut that doesn't override IconLocation all pick this up automatically, so the
+         install-scr.ps1 shortcuts and Inno's [Icons] entries need no separate icon wiring. -->
+    <ApplicationIcon>..\..\assets\icon\win4kss.ico</ApplicationIcon>
     <!-- Read by installer/Win4KSS.iss (passed through by scripts/build-installer.ps1) so the
          installer's version and the app's own version resource stay the same number.
          TODO(review): bump this and the installer's MyAppVersion together; nothing enforces

@@ -75,6 +75,10 @@ Compression=lzma2/normal
 SolidCompression=yes
 WizardStyle=modern
 InfoBeforeFile=InfoBefore.txt
+; Setup.exe's own icon (Explorer, taskbar while it runs). UninstallDisplayIcon already points at
+; {#MyAppExeName}, which carries the same icon baked into its own PE resources (Win4K.ScreenSaver.csproj's
+; ApplicationIcon) -- no separate uninstall icon file needed.
+SetupIconFile=..\assets\icon\win4kss.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 
 [Languages]
