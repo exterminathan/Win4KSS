@@ -112,6 +112,56 @@ function Test-SingleFilePublish {
     return -not ((Test-Path -LiteralPath $core) -or (Test-Path -LiteralPath $libmpv))
 }
 
+function Sync-CompanionFiles {
+    # -UserScope needs every sibling file a loose multi-file publish produces -- Win4K.Core.dll,
+    # libmpv-2.dll, WebView2Loader.dll, the two WebView2 managed DLLs, runtimes\win-x64\native\,
+    # deps.json, runtimeconfig.json -- actually sitting beside the companion .exe, or it cannot
+    # run. Copying only the .scr and the .exe (which is all the code below this function does on
+    # its own) worked by coincidence under the Inno Setup installer, where -PublishDir IS
+    # $companionDir already (Inno's own [Files] section put everything there directly) -- but
+    # the documented dev flow runs this script against <repo>\publish, a DIFFERENT folder, and
+    # left $companionDir missing every one of those files.
+    #
+    # Skips the .scr/.exe themselves: the code below has its own hard-link/self-reference
+    # handling for those two and must not be fought over them here. Skips *.pdb: those are
+    # symbols, not something the running app needs beside it. Removes stale files that are in
+    # $To but not in $From, so a DLL a past build needed and this one does not does not linger
+    # across upgrades -- $companionDir holds nothing but this app's own published output, so
+    # that is always safe.
+    param([string]$From, [string]$To)
+
+    $fromFull = (Resolve-Path -LiteralPath $From).Path
+    if ((Test-Path -LiteralPath $To) -and ((Resolve-Path -LiteralPath $To).Path -ieq $fromFull)) { return }
+
+    New-Item -ItemType Directory -Force -Path $To | Out-Null
+    $skipNames = @($scrName, "$appName.exe")
+
+    $wanted = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    Get-ChildItem -LiteralPath $From -Recurse -File |
+        Where-Object { $_.Extension -ine '.pdb' -and ($skipNames -notcontains $_.Name) } |
+        ForEach-Object {
+            $rel  = $_.FullName.Substring($fromFull.Length + 1)
+            $dest = Join-Path $To $rel
+            $destDir = Split-Path $dest
+            if ($destDir -and -not (Test-Path -LiteralPath $destDir)) {
+                New-Item -ItemType Directory -Force -Path $destDir | Out-Null
+            }
+            Copy-Item -LiteralPath $_.FullName -Destination $dest -Force
+            [void]$wanted.Add($rel)
+        }
+
+    $toFull = (Resolve-Path -LiteralPath $To).Path
+    Get-ChildItem -LiteralPath $To -Recurse -File |
+        Where-Object { $skipNames -notcontains $_.Name } |
+        ForEach-Object {
+            $rel = $_.FullName.Substring($toFull.Length + 1)
+            if (-not $wanted.Contains($rel)) {
+                Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+                Write-Host "  removed stale: $($_.FullName)" -ForegroundColor DarkGray
+            }
+        }
+}
+
 function Test-Admin {
     $identity  = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object Security.Principal.WindowsPrincipal($identity)
@@ -357,8 +407,8 @@ if (-not (Test-Path $source)) {
 # multi-file publish's sibling DLLs (Win4K.Core.dll, libmpv-2.dll, WebView2Loader.dll, ...)
 # would simply be missing from System32 -- Windows would list it in the dropdown and then fail
 # to run it. Refuse up front with a clear reason rather than silently installing something
-# broken. -UserScope is unaffected: its companion dir already gets the whole publish folder
-# copied together (see below), so it keeps working exactly as before.
+# broken. -UserScope is unaffected: Sync-CompanionFiles below mirrors every sibling file from
+# $publishDir into the companion dir, so it keeps working for a loose publish too.
 # TODO(review): if System32 support for a loose multi-file build is ever wanted, this would need
 # to copy every sibling file alongside the .scr into System32 too, not just refuse.
 if (-not $UserScope) {
@@ -377,9 +427,11 @@ if (-not $UserScope) {
 
 Assert-Admin
 
-$sizeMb = [math]::Round((Get-Item $source).Length / 1MB, 1)
+# Sums the whole publish folder, not just $source -- for a loose multi-file publish, the .scr
+# itself is a ~150 KB apphost; the real size is libmpv-2.dll and friends sitting beside it.
+$sizeMb = [math]::Round(((Get-ChildItem -LiteralPath $publishDir -Recurse -File | Measure-Object -Property Length -Sum).Sum) / 1MB, 1)
 $where = if ($UserScope) { 'the user profile' } else { 'System32' }
-Write-Host "Installing $scrName ($sizeMb MB) to $where..." -ForegroundColor Cyan
+Write-Host "Installing $appName ($sizeMb MB) to $where..." -ForegroundColor Cyan
 
 Stop-NonSaverInstances
 
@@ -397,6 +449,15 @@ if ($installedFull -and $sourceFull -ieq $installedFull) {
 } else {
     Copy-Item $source $installed -Force
     Write-Host "  installed: $installed" -ForegroundColor Green
+}
+
+# System32 mode already refused above unless the publish is single-file, in which case there
+# is nothing else to mirror -- everything the .scr needs is bundled inside it. -UserScope is
+# the one that can be a loose multi-file publish, and its companion dir needs every sibling
+# file from $publishDir (DLLs, runtimes\, the two .json files) or the .scr/.exe just placed
+# cannot actually run. No-op when $publishDir already IS $companionDir (Inno's own case).
+if ($UserScope) {
+    Sync-CompanionFiles -From $publishDir -To $companionDir
 }
 
 # Companion .exe for the shortcut to target. A hard link costs no extra disk when both
