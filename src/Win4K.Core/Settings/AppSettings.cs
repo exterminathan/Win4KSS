@@ -132,6 +132,16 @@ public sealed class AppSettings
     /// </summary>
     public string? FfmpegPath { get; set; }
 
+    /// <summary>
+    /// The global "Start now" hotkey in the "CTRL+ALT+S" form, held by the resident hotkey
+    /// listener (<c>Win4KSS.exe /hotkey</c>). "" means no hotkey. Null means never set: the
+    /// default applies, and the listener first adopts whatever the old Start Screen Saver
+    /// shortcuts carried (until v1.2.6 the hotkey was a field on those .lnk files). A null
+    /// never overwrites a value already on disk (see <see cref="Save"/>), so a process that
+    /// loaded its settings before the listener migrated cannot quietly undo the migration.
+    /// </summary>
+    public string? StartNowHotkey { get; set; }
+
     // ---- Settings v2: the rotation is per clip. Edit these through Rotation (SetInRotation,
     // SetAutoAdd, MergeNewKeys) rather than directly; it keeps the rules in one place.
 
@@ -268,10 +278,36 @@ public sealed class AppSettings
         if (Version >= 2)
             BackUpV1(path);
 
+        // Another process (the hotkey listener, the browser) may have set the hotkey since this
+        // one loaded; null only means "never set", so it must not erase that.
+        if (StartNowHotkey is null && File.Exists(path))
+            StartNowHotkey = ReadStringField(path, nameof(StartNowHotkey));
+
         // Temp-then-move: a crash mid-write leaves the previous good file intact.
         File.WriteAllText(temp, JsonSerializer.Serialize(this, Options));
         File.Move(temp, path, overwrite: true);
         Log.Info($"Settings: saved to {path}");
+    }
+
+    /// <summary>A top-level string field of a settings file, or null if it is absent or unreadable.</summary>
+    private static string? ReadStringField(string path, string name)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(File.ReadAllText(path));
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+                return null;
+            foreach (var property in document.RootElement.EnumerateObject())
+            {
+                if (property.Name.Equals(name, StringComparison.OrdinalIgnoreCase) &&
+                    property.Value.ValueKind == JsonValueKind.String)
+                    return property.Value.GetString();
+            }
+        }
+        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
+        {
+        }
+        return null;
     }
 
     /// <summary>The "version" field of a settings file's JSON, or null if it has none (or is not JSON).</summary>

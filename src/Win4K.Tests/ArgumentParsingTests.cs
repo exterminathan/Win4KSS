@@ -22,6 +22,8 @@ public class ArgumentParsingTests
     [InlineData("/w", "Window")]
     [InlineData("/now", "StartNow")]
     [InlineData("/NOW", "StartNow")]
+    [InlineData("/hotkey", "Hotkey")]
+    [InlineData("/HOTKEY", "Hotkey")]
     [InlineData("/x", "Unknown")]
     public void Simple_verbs_parse(string arg, string expected)
     {

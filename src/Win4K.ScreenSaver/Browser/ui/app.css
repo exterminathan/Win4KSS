@@ -51,34 +51,202 @@ a { color: var(--accent); }
   overflow: hidden;
 }
 
-/* ---- toolbar ------------------------------------------------------------------------ */
+/* ---- toolbar: two rows, one place --------------------------------------------------- */
+/* The top row finds and arranges clips and holds the global actions; the row under it says
+   what is shown and what is selected, with the bulk actions for a multi-selection. */
 
 .toolbar {
   flex: 0 0 auto;
   display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
+  flex-direction: column;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
+  position: relative;
+  z-index: 45;
+}
+
+.toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+}
+
+.toolbar-main {
+  min-height: 60px;
+  padding-top: 11px;
+  padding-bottom: 11px;
 }
 
 .toolbar-group {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
 }
 
 .toolbar-label {
   color: var(--text-dim);
-  font-size: 12px;
+  font-size: 12.5px;
 }
 
-.toolbar-search input {
-  width: 240px;
+.toolbar-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 300px;
+  max-width: 420px;
+  min-width: 150px;
 }
+
+.toolbar-search input[type="search"] {
+  width: 100%;
+  padding-left: 34px;
+}
+
+.search-icon {
+  position: absolute;
+  left: 11px;
+  width: 15px;
+  height: 15px;
+  color: var(--text-faint);
+  pointer-events: none;
+}
+
+.toolbar-search:focus-within .search-icon { color: var(--accent); }
+
+.toolbar-main input[type="search"],
+.toolbar-main select {
+  height: 36px;
+  font-size: 13.5px;
+  border-radius: var(--radius);
+}
+
+.toolbar-main select { padding: 0 10px; }
+.toolbar-main .btn { height: 36px; padding: 0 15px; border-radius: var(--radius); font-size: 13.5px; }
+.toolbar-main .icon-btn { width: 36px; height: 36px; border-radius: var(--radius); font-size: 17px; }
 
 .toolbar-spacer { flex: 1 1 auto; }
+
+/* Card size: one segmented control rather than three loose buttons. */
+.segmented {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.segmented button {
+  min-width: 32px;
+  height: 30px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.segmented button:hover { color: var(--text); background: var(--panel-raised); }
+.segmented button.is-active { background: var(--accent); color: var(--accent-text); }
+
+/* The selection row. Always there, so nothing below it jumps when a selection starts. */
+.toolbar-context {
+  min-height: 44px;
+  padding-top: 5px;
+  padding-bottom: 5px;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  transition: background-color .15s ease, box-shadow .15s ease;
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+.toolbar-context.has-selection {
+  background: var(--panel-alt);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.toolbar-context .grid-status {
+  padding: 0;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.bulk {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-wrap: wrap;
+  row-gap: 6px;
+  animation: bulk-in .16s ease;
+}
+
+@keyframes bulk-in { from { opacity: 0; transform: translateY(-3px); } }
+
+.bulk::before {
+  content: "";
+  width: 1px;
+  height: 18px;
+  background: var(--border);
+  margin-right: 2px;
+}
+
+.bulk-count {
+  background: var(--accent);
+  color: var(--accent-text);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.bulk-summary {
+  color: var(--text-dim);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.bulk-actions {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.toolbar-context.is-multi .bulk-actions { display: flex; }
+
+.bulk-clear { white-space: nowrap; margin-left: auto; }
+.toolbar-context.is-multi .bulk-clear { margin-left: 4px; }
+
+.selection-hint {
+  color: var(--text-faint);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.toolbar-context.has-selection .selection-hint { display: none; }
+
+/* (.btn.x: these follow .btn's own rules further down, so they need the extra class to win.) */
+.btn.btn-sm { padding: 4px 11px; font-size: 12.5px; }
+
+.btn.btn-quiet { background: transparent; border-color: transparent; color: var(--accent); }
+.btn.btn-quiet:hover { background: var(--panel-alt); border-color: var(--border); }
+.btn.btn-quiet:disabled { color: var(--text-faint); background: transparent; border-color: transparent; }
+
+/* Joined buttons: two halves of one choice (add/remove, keep/stop keeping). */
+.btn-group { display: inline-flex; }
+.btn-group .btn { border-radius: 0; }
+.btn-group .btn + .btn { margin-left: -1px; }
+.btn-group .btn:first-child { border-radius: 6px 0 0 6px; }
+.btn-group .btn:last-child { border-radius: 0 6px 6px 0; }
+.btn-group .btn:hover { position: relative; z-index: 1; }
 
 input[type="search"], input[type="text"], input[type="number"], select {
   background: var(--panel-alt);
@@ -141,8 +309,6 @@ input[type="search"]:focus, input[type="text"]:focus, input[type="number"]:focus
 
 .link-btn:hover { text-decoration: underline; }
 
-.toolbar-viewsize { gap: 2px; }
-.viewsize-btn { width: 26px; height: 26px; font-size: 12px; }
 
 .spinner {
   width: 16px; height: 16px;
@@ -258,7 +424,6 @@ input[type="search"]:focus, input[type="text"]:focus, input[type="number"]:focus
 .grid-status {
   color: var(--text-dim);
   font-size: 12px;
-  padding: 0 2px 10px;
 }
 
 .grid {
@@ -601,27 +766,6 @@ input[type="search"]:focus, input[type="text"]:focus, input[type="number"]:focus
 .tag-chip.tag-state-unhealthy { border-color: var(--bad); color: var(--bad); }
 .tag-chip.tag-state-new { border-color: var(--warn); color: var(--warn); }
 
-/* ---- bulk bar ---------------------------------------------------------------------------- */
-
-.bulk-bar {
-  position: fixed;
-  left: 50%;
-  bottom: 18px;
-  transform: translateX(-50%);
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  background: var(--panel-raised);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 8px 10px 8px 16px;
-  box-shadow: var(--shadow);
-  z-index: 50;
-}
-
-.bulk-count { font-size: 12.5px; color: var(--text-dim); white-space: nowrap; }
-.bulk-actions { display: flex; gap: 6px; }
-
 /* ---- settings overlay -------------------------------------------------------------------- */
 
 .overlay {
@@ -869,9 +1013,9 @@ input[type="search"]:focus, input[type="text"]:focus, input[type="number"]:focus
 /* ---- small-window responsiveness ------------------------------------------------------ */
 
 @media (max-width: 980px) {
-  .sidebar { position: fixed; left: 0; top: 46px; bottom: 0; z-index: 40; transform: translateX(-100%); transition: transform .15s ease; box-shadow: var(--shadow); }
+  .sidebar { position: fixed; left: 0; top: var(--header-h, 106px); bottom: 0; z-index: 40; transform: translateX(-100%); transition: transform .15s ease; box-shadow: var(--shadow); }
   .sidebar.is-open { transform: translateX(0); }
-  .detail { position: fixed; right: 0; top: 46px; bottom: 0; z-index: 40; width: 320px; box-shadow: var(--shadow); }
+  .detail { position: fixed; right: 0; top: var(--header-h, 106px); bottom: 0; z-index: 40; width: 320px; box-shadow: var(--shadow); }
 }
 
 /* ---- integration additions (Phase E) ---------------------------------------------------- */
@@ -965,8 +1109,10 @@ input[type="search"]:focus, input[type="text"]:focus, input[type="number"]:focus
 
 @media (max-width: 980px) {
   .toggle-sidebar { display: inline-flex; }
-  .toolbar-search input { width: 160px; }
   .detail-preview { top: -14px; }
+  .toolbar-row { gap: 8px; padding-left: 12px; padding-right: 12px; }
+  .toolbar-main .toolbar-label { display: none; }
+  .toolbar-main { flex-wrap: wrap; row-gap: 8px; }
 }
 
 .settings-pane > .switch-row { margin: 8px 0; }

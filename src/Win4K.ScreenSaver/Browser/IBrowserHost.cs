@@ -20,10 +20,19 @@ public interface IBrowserHost
     /// <param name="startWithKey">A clip to play first ("Play now"); null for the rotation as usual.</param>
     bool StartNow(string? startWithKey);
 
+    /// <summary>Which Start Screen Saver shortcuts exist. The hotkey is the bridge's (settings), not the host's.</summary>
     ShortcutOptions ReadShortcuts();
 
+    /// <summary>Creates or removes the shortcuts; <see cref="ShortcutOptions.Hotkey"/> is ignored.</summary>
     /// <returns>False if any shortcut could not be written.</returns>
     bool ApplyShortcuts(ShortcutOptions options);
+
+    /// <summary>
+    /// Puts a hotkey already saved to settings.json into effect (<see cref="HotkeyAgent.Apply"/>):
+    /// the resident listener re-reads it, or is started, or stops for "".
+    /// </summary>
+    /// <returns>A problem to tell the user (the combination is taken), or null.</returns>
+    string? ApplyHotkey(string hotkey, string? previous);
 
     /// <summary>A native folder picker. Null when cancelled.</summary>
     string? PickFolder(string title, string? initialPath);

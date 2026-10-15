@@ -45,12 +45,12 @@ key, or click.
 
 ## The hotkey (Ctrl+Alt+S) doesn't do anything
 
-- It only works for the **Desktop** or **Start Menu** shortcut named "Start Screen Saver" —
-  don't move, rename, or delete either one, and don't put a copy somewhere else expecting the
-  hotkey to still work from there.
-- The hotkey is read by Windows Explorer, which can take a few seconds to notice a shortcut
-  change right after installing. Give it a moment, or sign out and back in.
-- Something else on your PC might already be using Ctrl+Alt+S. Open the clip browser
+- Since v1.2.6 the hotkey doesn't depend on any shortcut: a small background helper
+  ("Win4KSS" in Task Manager → Startup apps) listens for it. If it was disabled there, or
+  ended, opening the clip browser starts it again; re-enable it in Startup apps so it also
+  starts when you sign in.
+- Something else on your PC might already be using Ctrl+Alt+S (the clip browser warns when
+  it notices). Open the clip browser
   (`/c`, or the Start Menu's "Win4KSS" shortcut) → the gear icon → **Start now** tab, and
   record a different combination there (it needs at least one of Ctrl/Alt/Shift plus a key).
 

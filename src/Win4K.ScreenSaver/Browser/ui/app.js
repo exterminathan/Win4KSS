@@ -17,7 +17,7 @@
 //   6. Grid rendering
 //   7. Hover preview
 //   8. Detail pane + the native preview panel (panelRect)
-//   9. Selection / bulk bar
+//   9. Selection / the selection bar (bulk actions, in the header)
 //  10. Sidebar (facets)
 //  11. Toolbar (search, sort, view size, refresh, start now)
 //  12. Settings panel
@@ -259,6 +259,9 @@
     buildGrid();
     renderFacets();
     refreshDetailTagChips();
+    // Clips the filters now hide leave the selection, so bulk actions only touch what is shown.
+    if (pruneSelectionToVisible(null)) applySelectionChanged();
+    else updateSelectionBar();
   }
 
   // ======================================================================================
@@ -810,7 +813,7 @@
   /** Anything currently drawn over the video box? (The native panel would hide it.) */
   function panelOccluded(rect) {
     if (document.querySelector('.overlay:not(.hidden)')) return true; // settings, confirm
-    for (const el of document.querySelectorAll('.toast, .bulk-bar:not(.hidden), .sidebar.is-open')) {
+    for (const el of document.querySelectorAll('.toast, .sidebar.is-open')) {
       if (intersects(rect, el.getBoundingClientRect())) return true;
     }
     return false;
@@ -847,8 +850,26 @@
   }
 
   // ======================================================================================
-  // 9. Selection / bulk bar
+  // 9. Selection / the selection bar
+  //
+  // The selection only ever holds clips the current filters show: a filter, search or state
+  // change that hides a selected clip drops it (pruneSelectionToVisible), so the count is what
+  // you see and bulk actions never reach a clip you cannot see. The selection bar is the
+  // header's second row; its bulk actions appear for two or more clips (one opens the detail
+  // pane instead).
   // ======================================================================================
+
+  /** Drops selected clips the filters hide, except `keepKey`. True if anything was dropped. */
+  function pruneSelectionToVisible(keepKey) {
+    if (Store.selection.size === 0) return false;
+    const shown = new Set(Store.visible);
+    let changed = false;
+    for (const key of Array.from(Store.selection)) {
+      if (!shown.has(key) && key !== keepKey) { Store.selection.delete(key); changed = true; }
+    }
+    if (Store.lastClickedKey && !shown.has(Store.lastClickedKey)) Store.lastClickedKey = null;
+    return changed;
+  }
 
   function handleCardClick(key, e) {
     if (e.shiftKey && Store.lastClickedKey) {
@@ -875,16 +896,51 @@
     for (const [key, el] of cardEls) el.classList.toggle('is-selected', Store.selection.has(key));
 
     const keys = Array.from(Store.selection);
-    const bulkBarEl = document.getElementById('bulk-bar');
     if (keys.length === 1) {
-      bulkBarEl.classList.add('hidden');
       if (Store.detailKey !== keys[0]) openDetail(keys[0]);
     } else {
       closeDetail();
-      bulkBarEl.classList.toggle('hidden', keys.length === 0);
-      if (keys.length > 0) document.getElementById('bulk-count').textContent = `${keys.length.toLocaleString()} selected`;
     }
+    updateSelectionBar();
     schedulePanelUpdate();
+  }
+
+  /** The header's selection row: count, what the selection holds, bulk actions, select all. */
+  function updateSelectionBar() {
+    const n = Store.selection.size;
+    const shown = Store.visible.length;
+
+    const bar = document.getElementById('selection-bar');
+    bar.classList.toggle('has-selection', n > 0);
+    bar.classList.toggle('is-multi', n > 1);
+    document.getElementById('bulk-bar').classList.toggle('hidden', n === 0);
+
+    if (n > 0) {
+      let inRotation = 0;
+      let kept = 0;
+      for (const key of Store.selection) {
+        const s = Store.state.get(key);
+        if (s && s.inRotation) inRotation++;
+        if (s && s.pinned) kept++;
+      }
+      document.getElementById('bulk-count').textContent = `${n.toLocaleString()} selected`;
+      document.getElementById('bulk-summary').textContent =
+        `${inRotation.toLocaleString()} in rotation \u00b7 ${kept.toLocaleString()} kept offline`;
+      setDisabled('bulk-rotation-on', inRotation === n);
+      setDisabled('bulk-rotation-off', inRotation === 0);
+      setDisabled('bulk-pin-on', kept === n);
+      setDisabled('bulk-pin-off', kept === 0);
+    }
+
+    const all = document.getElementById('select-all-filtered');
+    all.textContent = shown === Store.clips.size ? `Select all ${shown.toLocaleString()}` : `Select all ${shown.toLocaleString()} shown`;
+    all.disabled = shown === 0 || (n === shown && Store.visible.every((k) => Store.selection.has(k)));
+    all.classList.toggle('hidden', !Store.catalogLoaded);
+  }
+
+  function setDisabled(id, disabled) {
+    const el = document.getElementById(id);
+    if (el) el.disabled = disabled;
   }
 
   function clearSelection() {
@@ -1316,15 +1372,18 @@
       <p class="settings-hint">For when you're walking away and don't want to wait out the idle timer. It honours "On resume, display logon screen".</p>
       <div class="settings-row"><button id="set-startnow" type="button" class="btn btn-accent">Start now</button></div>
 
+      <h3>Hotkey</h3>
+      <div class="settings-row">
+        <span class="field-label">Hotkey</span>
+        <input id="set-hotkey" type="text" readonly placeholder="none \u2014 click, then press a combination" class="hotkey-input">
+        <button id="hotkey-clear" type="button" class="btn">Clear</button>
+      </div>
+      <p class="settings-hint">Works anywhere in Windows, with or without the shortcuts below. Use Ctrl, Alt or Shift plus a key; Backspace clears it. A change takes effect at once.</p>
+
       <h3>Shortcuts</h3>
       ${switchRow('set-shortcut-desktop', 'Desktop shortcut')}
       ${switchRow('set-shortcut-startmenu', 'Start menu shortcut')}
-      <div class="settings-row">
-        <span class="field-label">Hotkey</span>
-        <input id="set-hotkey" type="text" readonly placeholder="click, then press a key combination" class="hotkey-input">
-        <button id="hotkey-clear" type="button" class="btn">Clear</button>
-      </div>
-      <p class="settings-hint">Windows attaches the hotkey to a shortcut, so it needs one of them. Use Ctrl, Alt or Shift plus a key. Backspace clears it.</p>
+      <p class="settings-hint">"Start Screen Saver" icons that do the same as the button above. Optional.</p>
     `;
     document.getElementById('set-startnow').addEventListener('click', () => Bridge.send('startNow', {}));
     document.getElementById('set-shortcut-desktop').addEventListener('change', (e) => patchSettings({ shortcutDesktop: e.target.checked }, true));
@@ -1575,11 +1634,6 @@
     setIfIdle('set-shortcut-desktop', (el) => { el.checked = !!s.shortcutDesktop; });
     setIfIdle('set-shortcut-startmenu', (el) => { el.checked = !!s.shortcutStartMenu; });
     setIfIdle('set-hotkey', (el) => { el.value = formatHotkey(s.hotkey); });
-    const hasShortcut = !!(s.shortcutDesktop || s.shortcutStartMenu);
-    for (const id of ['set-hotkey', 'hotkey-clear']) {
-      const el = document.getElementById(id);
-      if (el) el.disabled = !hasShortcut;
-    }
 
     const c = s.previewCapabilities || {};
     setText('preview-caps', c.ffmpegAvailable
@@ -1764,8 +1818,13 @@
         refreshGrid(changed);
         if (flagsChanged) renderFacets();
         if (settingsBuilt && flagsChanged) renderSourceToggles();
+        // A clip a State filter now hides leaves the selection too -- except the one open in the
+        // detail pane, which is being edited right there.
+        if (pruneSelectionToVisible(Store.selection.size === 1 ? Store.detailKey : null)) applySelectionChanged();
+        else if (changed.some((k) => Store.selection.has(k))) updateSelectionBar();
       } else {
         for (const key of changed) updateCardVisuals(key);
+        if (changed.some((k) => Store.selection.has(k))) updateSelectionBar();
       }
     });
 
@@ -1933,6 +1992,13 @@
     wireGlobalKeys();
     registerHostHandlers();
     updateGridStatus();
+    updateSelectionBar();
+    // The narrow layout's off-canvas sidebar and detail pane sit just under the header.
+    const header = document.getElementById('toolbar');
+    new ResizeObserver(() => {
+      document.documentElement.style.setProperty('--header-h', `${header.offsetHeight}px`);
+      schedulePanelUpdate();
+    }).observe(header);
     // Last: every handler is in place before the host is told it may start posting.
     Bridge.connect();
     // After a reload the host may still be playing what the old page selected, in a panel

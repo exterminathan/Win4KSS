@@ -4,11 +4,14 @@ using Win4K.Core;
 namespace Win4K.ScreenSaver;
 
 /// <summary>
-/// Creates the walk-away shortcut and its global hotkey.
+/// Creates the optional "Start Screen Saver" shortcuts on the Desktop and in the Start Menu.
 ///
-/// The hotkey is a native field on the .lnk itself, which Explorer binds for shortcuts under
-/// the Desktop or the Start Menu. That is why this is a shortcut rather than a tray app: no
-/// background process, no RegisterHotKey agent, nothing running when the screen saver is not.
+/// They are launchers only. The global hotkey is held by the resident listener
+/// (<see cref="HotkeyAgent"/>), not by a Hotkey field on these .lnk files as it was until
+/// v1.2.6: Explorer only binds that field for shortcuts in those two places, so turning a
+/// shortcut off turned the hotkey off, and a field left on a shortcut would make Explorer grab
+/// the same combination and start the saver twice. So shortcuts are always written without
+/// one, and <see cref="ClearHotkey"/> strips it from old ones.
 ///
 /// The shortcut points at /now rather than /s deliberately. /now asks Windows to start the
 /// configured saver, which is the only route that honours "On resume, display logon screen" —
@@ -84,39 +87,31 @@ public static class ShortcutManager
     /// <summary>
     /// Writes (or rewrites) the shortcut. Returns false with a reason if it could not.
     /// </summary>
-    public static bool Create(string shortcutPath, string? hotkey = null, string? target = null, string? arguments = "/now")
+    public static bool Create(string shortcutPath, string? target = null, string? arguments = "/now")
     {
         try
         {
             target ??= ResolveTarget();
 
-            var shellType = Type.GetTypeFromProgID("WScript.Shell")
-                            ?? throw new InvalidOperationException("WScript.Shell is unavailable.");
-
-            var shell = Activator.CreateInstance(shellType)
-                        ?? throw new InvalidOperationException("Could not create WScript.Shell.");
-
             Directory.CreateDirectory(Path.GetDirectoryName(shortcutPath)!);
 
-            var shortcut = shellType.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, shell,
-                                                  [shortcutPath])
-                           ?? throw new InvalidOperationException("CreateShortcut returned nothing.");
+            WithShortcut(shortcutPath, (type, shortcut) =>
+            {
+                Set(type, shortcut, "TargetPath", target);
+                Set(type, shortcut, "Arguments", arguments ?? "");
+                Set(type, shortcut, "Description", "Start the screen saver now (locks on resume if configured)");
+                Set(type, shortcut, "WorkingDirectory", Path.GetDirectoryName(target) ?? "");
+                var icon = Path.Combine(Path.GetDirectoryName(target) ?? "", "win4kss.ico");
+                Set(type, shortcut, "IconLocation", (File.Exists(icon) ? icon : target) + ",0");
 
-            var type = shortcut.GetType();
+                // Never a hotkey on the shortcut (the listener holds it); clears one an old version left.
+                Set(type, shortcut, "Hotkey", "");
 
-            Set(type, shortcut, "TargetPath", target);
-            Set(type, shortcut, "Arguments", arguments ?? "");
-            Set(type, shortcut, "Description", "Start the screen saver now (locks on resume if configured)");
-            Set(type, shortcut, "WorkingDirectory", Path.GetDirectoryName(target) ?? "");
-            var icon = Path.Combine(Path.GetDirectoryName(target) ?? "", "win4kss.ico");
-            Set(type, shortcut, "IconLocation", (File.Exists(icon) ? icon : target) + ",0");
+                type.InvokeMember("Save", BindingFlags.InvokeMethod, null, shortcut, null);
+                return 0;
+            });
 
-            if (!string.IsNullOrWhiteSpace(hotkey))
-                Set(type, shortcut, "Hotkey", hotkey);
-
-            type.InvokeMember("Save", BindingFlags.InvokeMethod, null, shortcut, null);
-
-            Log.Info($"Shortcut: wrote {shortcutPath} -> {target} {arguments} ({hotkey})");
+            Log.Info($"Shortcut: wrote {shortcutPath} -> {target} {arguments}");
             return true;
         }
         catch (Exception ex)
@@ -142,7 +137,32 @@ public static class ShortcutManager
         }
     }
 
-    /// <summary>Reads the hotkey currently bound to a shortcut, or null if it has none.</summary>
+    /// <summary>
+    /// Removes the Hotkey field from an existing shortcut, leaving everything else as it is.
+    /// Explorer releases the combination as soon as the file is saved (measured).
+    /// </summary>
+    public static void ClearHotkey(string shortcutPath)
+    {
+        try
+        {
+            if (!File.Exists(shortcutPath))
+                return;
+
+            WithShortcut(shortcutPath, (type, shortcut) =>
+            {
+                Set(type, shortcut, "Hotkey", "");
+                type.InvokeMember("Save", BindingFlags.InvokeMethod, null, shortcut, null);
+                return 0;
+            });
+            Log.Info($"Shortcut: cleared the old hotkey field on {shortcutPath}");
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"Shortcut: could not clear the hotkey on {shortcutPath}", ex);
+        }
+    }
+
+    /// <summary>Reads the hotkey a shortcut carries (only old ones do), or null if it has none.</summary>
     public static string? ReadHotkey(string shortcutPath)
     {
         try
@@ -150,16 +170,8 @@ public static class ShortcutManager
             if (!File.Exists(shortcutPath))
                 return null;
 
-            var shellType = Type.GetTypeFromProgID("WScript.Shell");
-            if (shellType is null) return null;
-
-            var shell = Activator.CreateInstance(shellType);
-            var shortcut = shellType.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, shell,
-                                                  [shortcutPath]);
-            if (shortcut is null) return null;
-
-            var value = shortcut.GetType()
-                                .InvokeMember("Hotkey", BindingFlags.GetProperty, null, shortcut, null) as string;
+            var value = WithShortcut(shortcutPath, (type, shortcut) =>
+                type.InvokeMember("Hotkey", BindingFlags.GetProperty, null, shortcut, null) as string);
 
             return string.IsNullOrWhiteSpace(value) ? null : value;
         }
@@ -170,35 +182,34 @@ public static class ShortcutManager
     }
 
     /// <summary>
-    /// What the browser's settings panel shows: which shortcuts exist and the hotkey on them
-    /// (the Desktop one first, as that is the one most people make).
+    /// What the browser's settings panel shows: which shortcuts exist, plus the hotkey in force
+    /// (from settings, see <see cref="HotkeyAgent.Effective"/>; the shortcuts do not carry it).
     /// </summary>
-    public static ShortcutOptions ReadOptions() => new(
-        DesktopShortcutExists,
-        StartMenuShortcutExists,
-        ReadHotkey(DesktopPath) ?? ReadHotkey(StartMenuPath) ?? DefaultHotkey);
+    public static ShortcutOptions ReadOptions(string? hotkey) => new(DesktopShortcutExists, StartMenuShortcutExists, hotkey);
 
     /// <summary>
-    /// Creates or removes the Desktop and Start Menu shortcuts to match <paramref name="options"/>,
-    /// all carrying the same hotkey. Shortcuts target the companion .exe, never the .scr.
+    /// Creates or removes the Desktop and Start Menu shortcuts to match <paramref name="options"/>.
+    /// The hotkey is not theirs and is ignored here. Only a shortcut whose presence changes is
+    /// touched. Shortcuts target the companion .exe, never the .scr.
     /// </summary>
     /// <returns>False if any shortcut could not be written or removed (details are logged).</returns>
     public static bool Apply(ShortcutOptions options)
     {
-        var hotkey = string.IsNullOrWhiteSpace(options.Hotkey) ? null : options.Hotkey;
-
         // Shortcuts must target an .exe, never the installed .scr — see CompanionExePath.
         if (options.Desktop || options.StartMenu)
             EnsureCompanionExe();
 
-        var ok = options.Desktop ? Create(DesktopPath, hotkey) : Remove(DesktopPath);
-        ok &= options.StartMenu ? Create(StartMenuPath, hotkey) : Remove(StartMenuPath);
+        var ok = Sync(DesktopPath, options.Desktop);
+        ok &= Sync(StartMenuPath, options.StartMenu);
         return ok;
+
+        static bool Sync(string path, bool wanted) =>
+            wanted ? File.Exists(path) || Create(path) : Remove(path);
     }
 
     /// <summary>
-    /// Normalises a hotkey typed or captured by the browser page into the "CTRL+ALT+S" form a
-    /// .lnk expects. Accepts WinForms key names ("S", "F12", "D1") and the DOM's
+    /// Normalises a hotkey typed or captured by the browser page into the "CTRL+ALT+S" form
+    /// settings store (the same form the old .lnk Hotkey field used). Accepts WinForms key names ("S", "F12", "D1") and the DOM's
     /// KeyboardEvent.code names ("KeyS", "Digit1"), with CTRL/ALT/SHIFT in any order and case.
     /// Null or empty means "no hotkey" and returns "". Returns null when it is not a usable
     /// hotkey (no modifier, or an unknown key).
@@ -242,6 +253,35 @@ public static class ShortcutManager
         return key is { } k ? ToShortcutHotkey(k | modifiers) : null;
     }
 
+    /// <summary>
+    /// Opens (or starts) a .lnk through WScript.Shell and releases both COM objects before
+    /// returning. Left to the finalizer, they kept the windowless hotkey listener from ever
+    /// exiting: its STA was gone by then, and releasing them waited on it (measured: the process
+    /// outlived its "exiting" log line until killed).
+    /// </summary>
+    private static T WithShortcut<T>(string shortcutPath, Func<Type, object, T> use)
+    {
+        var shellType = Type.GetTypeFromProgID("WScript.Shell")
+                        ?? throw new InvalidOperationException("WScript.Shell is unavailable.");
+        object? shell = null;
+        object? shortcut = null;
+        try
+        {
+            shell = Activator.CreateInstance(shellType)
+                    ?? throw new InvalidOperationException("Could not create WScript.Shell.");
+            shortcut = shellType.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, shell, [shortcutPath])
+                       ?? throw new InvalidOperationException("CreateShortcut returned nothing.");
+            return use(shortcut.GetType(), shortcut);
+        }
+        finally
+        {
+            if (shortcut is not null && System.Runtime.InteropServices.Marshal.IsComObject(shortcut))
+                System.Runtime.InteropServices.Marshal.FinalReleaseComObject(shortcut);
+            if (shell is not null && System.Runtime.InteropServices.Marshal.IsComObject(shell))
+                System.Runtime.InteropServices.Marshal.FinalReleaseComObject(shell);
+        }
+    }
+
     private static void Set(Type type, object instance, string property, string value) =>
         type.InvokeMember(property, BindingFlags.SetProperty, null, instance, [value]);
 
@@ -269,8 +309,8 @@ public static class ShortcutManager
     }
 }
 
-/// <summary>The walk-away shortcuts as the settings panel edits them.</summary>
+/// <summary>The Start now options as the settings panel edits them.</summary>
 /// <param name="Desktop">A shortcut on the Desktop.</param>
 /// <param name="StartMenu">A shortcut in the Start Menu's Programs folder.</param>
-/// <param name="Hotkey">"CTRL+ALT+S" form, or null/empty for none. Explorer binds it only on those two shortcuts.</param>
+/// <param name="Hotkey">"CTRL+ALT+S" form, or null/empty for none. Held by <see cref="HotkeyAgent"/>, independent of the shortcuts.</param>
 public sealed record ShortcutOptions(bool Desktop, bool StartMenu, string? Hotkey);

@@ -5,8 +5,8 @@ using Win4K.Core;
 namespace Win4K.ScreenSaver;
 
 /// <summary>
-/// "Start now": shared by /now (the walk-away shortcut and hotkey) and the browser's Start now
-/// button. Prefers asking Windows to start the configured saver, because only a saver the
+/// "Start now": shared by the hotkey listener (<see cref="HotkeyAgent"/>), /now (the Start Screen
+/// Saver shortcuts) and the browser's Start now button. Prefers asking Windows to start the configured saver, because only a saver the
 /// system starts honours "On resume, display logon screen". If Windows does not start one —
 /// no saver enabled, ours not selected, the request ignored — it runs ours directly and locks
 /// the workstation itself afterwards when that setting is on. Start now never does nothing.
@@ -37,9 +37,10 @@ internal static class SaverLauncher
 
         if (IsOursTheSystemSaver())
         {
+            var asked = System.Diagnostics.Stopwatch.StartNew();
             if (NativeMethods.StartConfiguredScreenSaver() && WaitForSystemSaver())
             {
-                Log.Info("StartNow: Windows started the configured screen saver");
+                Log.Info($"StartNow: Windows started the configured screen saver ({asked.ElapsedMilliseconds} ms)");
                 return true;
             }
 
@@ -80,7 +81,7 @@ internal static class SaverLauncher
         {
             if (NativeMethods.IsScreenSaverRunning())
                 return true;
-            Thread.Sleep(100);
+            Thread.Sleep(20);
         }
         return false;
     }

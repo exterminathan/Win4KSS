@@ -69,6 +69,9 @@ internal static partial class NativeMethods
 
     private const uint ASFW_ANY = unchecked((uint)-1);
 
+    /// <summary>Lets whichever process this one starts next take the foreground (it must hold it itself).</summary>
+    internal static bool AllowAnyForeground() => AllowSetForegroundWindow(ASFW_ANY);
+
     /// <summary>
     /// Asks every top-level window to handle <paramref name="message"/> (a registered message,
     /// so only ours react), letting the receiver take the foreground — this process has it,

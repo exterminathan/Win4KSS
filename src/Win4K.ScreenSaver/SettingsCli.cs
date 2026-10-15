@@ -28,6 +28,13 @@ internal static class SettingsCli
         return new ShortcutOptions(wanted.Desktop ?? current.Desktop, wanted.StartMenu ?? current.StartMenu, hotkey);
     }
 
+    /// <summary>The shortcuts on disk, with the hotkey in force from settings.</summary>
+    private static ShortcutOptions CurrentOptions(AppSettings settings)
+    {
+        var hotkey = HotkeyAgent.Effective(settings.StartNowHotkey);
+        return ShortcutManager.ReadOptions(hotkey.Length == 0 ? null : hotkey);
+    }
+
     /// <summary>The shortcuts as the file stores them: hotkey in the normalised "CTRL+ALT+S" form, "" for none.</summary>
     public static PortableShortcuts ToPortable(ShortcutOptions s) =>
         new(s.Desktop, s.StartMenu, ShortcutManager.NormalizeHotkey(s.Hotkey) ?? s.Hotkey ?? "");
@@ -39,7 +46,7 @@ internal static class SettingsCli
         var settings = AppSettings.Load();
         var catalogue = ClipLibrary.LoadAsync(settings).GetAwaiter().GetResult();
         SettingsMigrator.Prepare(settings, catalogue); // in memory only
-        var model = SettingsPortability.Build(settings, catalogue, ToPortable(ShortcutManager.ReadOptions()),
+        var model = SettingsPortability.Build(settings, catalogue, ToPortable(CurrentOptions(settings)),
             typeof(SettingsCli).Assembly.GetName().Version?.ToString(), DateTime.UtcNow);
         SettingsPortability.WriteFile(model, path);
         return Say($"Exported settings to {Path.GetFullPath(path)}");
@@ -70,11 +77,17 @@ internal static class SettingsCli
                 warning = $" Kept-offline clips were NOT changed: they need {bytes >> 30} GB, over the {settings.CacheBudgetGb:0.#} GB limit.";
         }
 
-        var cur = ShortcutManager.ReadOptions();
-        if (Merge(cur, file!.Shortcuts) is var target && target != cur && !ShortcutManager.Apply(target))
+        var cur = CurrentOptions(settings);
+        var target = Merge(cur, file!.Shortcuts);
+        if ((target.Desktop != cur.Desktop || target.StartMenu != cur.StartMenu) && !ShortcutManager.Apply(target))
             warning += " The shortcuts could not be updated.";
+        var hotkeyChanged = !string.Equals(target.Hotkey ?? "", cur.Hotkey ?? "", StringComparison.OrdinalIgnoreCase);
+        if (hotkeyChanged)
+            settings.StartNowHotkey = target.Hotkey ?? "";
 
         BrowserBridge.SaveMerged(settings);
+        if (hotkeyChanged && HotkeyAgent.Apply(target.Hotkey ?? "", cur.Hotkey) is { } problem)
+            warning += " " + problem;
         return Say($"Imported settings from {Path.GetFullPath(path)}: {settings.RotationKeys.Count} rotation clips, " +
                    $"{settings.KeptOffline.Count} kept offline. Previous settings: {SettingsPortability.BackupFileName}.{warning}");
     }

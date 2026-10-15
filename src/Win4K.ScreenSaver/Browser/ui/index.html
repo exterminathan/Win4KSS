@@ -20,10 +20,18 @@
 -->
 <div id="app" class="app">
 
+  <!--
+    One header for everything that acts on the grid: the top row finds and arranges clips
+    (search, sort, card size) and holds the global actions; the row under it says what is shown
+    and what is selected, and carries the bulk actions for a multi-selection. The selection
+    only ever holds clips the filters show (app.js, pruneSelectionToVisible).
+  -->
   <header id="toolbar" class="toolbar">
+   <div class="toolbar-row toolbar-main">
     <button id="toggle-sidebar" type="button" class="icon-btn toggle-sidebar" title="Filters" aria-label="Show filters">☰</button>
-    <div class="toolbar-group toolbar-search">
-      <input id="search-input" type="search" placeholder="Search clips…" aria-label="Search clips" autocomplete="off">
+    <div class="toolbar-search">
+      <svg class="search-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10.4 10.4 14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      <input id="search-input" type="search" placeholder="Search clips, places, captions…" aria-label="Search clips" autocomplete="off">
     </div>
 
     <div class="toolbar-group">
@@ -43,13 +51,14 @@
       </select>
     </div>
 
-    <div class="toolbar-group toolbar-viewsize" role="group" aria-label="Card size">
-      <button type="button" class="icon-btn viewsize-btn" data-size="s" title="Small cards">S</button>
-      <button type="button" class="icon-btn viewsize-btn is-active" data-size="m" title="Medium cards">M</button>
-      <button type="button" class="icon-btn viewsize-btn" data-size="l" title="Large cards">L</button>
+    <div class="toolbar-group">
+      <span class="toolbar-label" id="viewsize-label">Size</span>
+      <div class="segmented toolbar-viewsize" role="group" aria-labelledby="viewsize-label">
+        <button type="button" class="viewsize-btn" data-size="s" title="Small cards">S</button>
+        <button type="button" class="viewsize-btn is-active" data-size="m" title="Medium cards">M</button>
+        <button type="button" class="viewsize-btn" data-size="l" title="Large cards">L</button>
+      </div>
     </div>
-
-    <button id="select-all-filtered" type="button" class="btn">Select all filtered</button>
 
     <div class="toolbar-spacer"></div>
 
@@ -58,6 +67,29 @@
     <button id="refresh-catalogs" type="button" class="btn" title="Re-harvest the Internet Archive, NASA and aerial-manifest catalogues">Refresh catalogues</button>
     <button id="start-now" type="button" class="btn btn-accent" title="Start the screen saver now">Start now</button>
     <button id="open-settings" type="button" class="icon-btn" title="Settings" aria-label="Open settings">⚙</button>
+   </div>
+
+   <div id="selection-bar" class="toolbar-row toolbar-context">
+    <span id="grid-status" class="grid-status" aria-live="polite"></span>
+    <button id="select-all-filtered" type="button" class="btn btn-sm btn-quiet">Select all</button>
+    <span class="selection-hint">Ctrl-click or Shift-click cards to select several</span>
+
+    <div id="bulk-bar" class="bulk hidden" aria-live="polite">
+      <span id="bulk-count" class="bulk-count"></span>
+      <span id="bulk-summary" class="bulk-summary"></span>
+      <div id="bulk-actions" class="bulk-actions">
+        <div class="btn-group" role="group" aria-label="Rotation">
+          <button id="bulk-rotation-on" type="button" class="btn btn-sm">Add to rotation</button>
+          <button id="bulk-rotation-off" type="button" class="btn btn-sm">Remove from rotation</button>
+        </div>
+        <div class="btn-group" role="group" aria-label="Offline">
+          <button id="bulk-pin-on" type="button" class="btn btn-sm">Keep offline</button>
+          <button id="bulk-pin-off" type="button" class="btn btn-sm">Stop keeping offline</button>
+        </div>
+      </div>
+      <button id="bulk-clear" type="button" class="link-btn bulk-clear">Clear selection</button>
+    </div>
+   </div>
   </header>
 
   <div id="body" class="body">
@@ -70,7 +102,6 @@
     </aside>
 
     <main id="grid-wrap" class="grid-wrap">
-      <div id="grid-status" class="grid-status" aria-live="polite"></div>
       <div id="grid" class="grid grid-m" role="list"><!-- populated by app.js: one .card per clip --></div>
       <div id="grid-loading" class="grid-empty"><div class="spinner spinner-lg"></div>Loading the catalogue…</div>
       <div id="grid-empty" class="grid-empty hidden">No clips match these filters.</div>
@@ -129,17 +160,6 @@
         <div id="detail-tags" class="detail-tags"></div>
       </div>
     </aside>
-  </div>
-
-  <div id="bulk-bar" class="bulk-bar hidden">
-    <span id="bulk-count" class="bulk-count"></span>
-    <div class="bulk-actions">
-      <button id="bulk-rotation-on" type="button" class="btn">Add to rotation</button>
-      <button id="bulk-rotation-off" type="button" class="btn">Remove from rotation</button>
-      <button id="bulk-pin-on" type="button" class="btn">Keep offline</button>
-      <button id="bulk-pin-off" type="button" class="btn">Stop keeping offline</button>
-    </div>
-    <button id="bulk-clear" type="button" class="link-btn">Clear selection</button>
   </div>
 
   <div id="settings-overlay" class="overlay hidden" role="dialog" aria-modal="true" aria-label="Settings">

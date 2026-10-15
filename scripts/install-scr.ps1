@@ -9,7 +9,14 @@
     at %LOCALAPPDATA%\Programs\Win4KSS; without -UserScope, ALSO copies the system32 build's
     .scr into System32 (needs elevation -- the only place Windows looks when populating the
     screen saver dropdown) and points SCRNSAVE.EXE at it instead. Either way, creates the
-    walk-away shortcut with its hotkey, targeting the user-scope companion .exe.
+    Start Screen Saver shortcuts on a fresh install (targeting the user-scope companion .exe),
+    and starts the resident hotkey listener (Win4KSS.exe /hotkey), which registers itself
+    under HKCU\...\Run to start at sign-in.
+
+    The hotkey is NOT on the shortcuts (it was until v1.2.6): the listener holds it with
+    RegisterHotKey, so it works whether or not any shortcut exists. Existing shortcuts are
+    left as the user has them; the listener strips the old Hotkey field from them itself,
+    after adopting its value, so this script must not clear it first.
 
     The shortcut points at /now rather than /s on purpose. /now asks Windows to start the
     configured screen saver, which is the only route that honours "On resume, display logon
@@ -37,9 +44,6 @@
 .PARAMETER TimeoutMinutes
     Idle timeout to set when -SetAsDefault is used. Default 10.
 
-.PARAMETER Hotkey
-    Hotkey for the shortcut, in .lnk form. Default CTRL+ALT+S. Pass "" for none.
-
 .PARAMETER UserScope
     Skip the System32 copy; install only to %LOCALAPPDATA%\Programs\Win4KSS, with no
     elevation.
@@ -50,8 +54,8 @@
     /c and /p from the Settings dialog) behaves identically.
 
 .PARAMETER Uninstall
-    Remove the System32 .scr (if present), the user-scope companion dir, and the shortcuts
-    (and any leftover Win4KAerial install).
+    Remove the System32 .scr (if present), the user-scope companion dir, the shortcuts, the
+    hotkey listener and its HKCU Run value (and any leftover Win4KAerial install).
 
 .PARAMETER RemoveMachineUninstallEntry
     Also delete the Apps & Features entry an older, machine-wide (admin) Inno install left in
@@ -60,6 +64,11 @@
 
 .PARAMETER SkipShortcuts
     Leave the Desktop / Start Menu shortcuts alone. For sandboxed test runs only.
+
+.PARAMETER SkipHotkey
+    Do not start the hotkey listener after installing. For sandboxed test runs: a temporary
+    LOCALAPPDATA does not move the app's own data root (.NET asks the shell for it), so a
+    listener started from a sandbox acts on the real profile unless WIN4K_HOME is set too.
 
 ELEVATION
     Nothing here runs elevated as a whole any more. Everything except System32 lives under
@@ -81,11 +90,11 @@ param(
     [string]$PublishDir,
     [switch]$SetAsDefault,
     [int]$TimeoutMinutes = 10,
-    [string]$Hotkey = 'CTRL+ALT+S',
     [switch]$UserScope,
     [switch]$Uninstall,
     [switch]$RemoveMachineUninstallEntry,
     [switch]$SkipShortcuts,
+    [switch]$SkipHotkey,
     # Internal: the elevated children this script starts for the System32 work.
     [switch]$System32Step,
     [switch]$RemoveSystem32Step,
@@ -292,7 +301,9 @@ function Remove-MachineUninstallEntry {
 }
 
 function New-TriggerShortcut {
-    param([string]$Path, [string]$Target, [string]$HotkeyValue)
+    # Opens an existing shortcut rather than replacing it, and never sets its Hotkey: the
+    # listener holds the hotkey, and adopts and clears the field old versions left here.
+    param([string]$Path, [string]$Target)
 
     $shell = New-Object -ComObject WScript.Shell
     $lnk = $shell.CreateShortcut($Path)
@@ -302,7 +313,6 @@ function New-TriggerShortcut {
     $lnk.WorkingDirectory = Split-Path $Target
     $ico = Join-Path (Split-Path $Target) 'win4kss.ico'
     $lnk.IconLocation     = if (Test-Path -LiteralPath $ico) { "$ico,0" } else { "$Target,0" }
-    if (-not [string]::IsNullOrWhiteSpace($HotkeyValue)) { $lnk.Hotkey = $HotkeyValue }
     $lnk.Save()
 
     Write-Host "  shortcut: $Path" -ForegroundColor Green
@@ -402,11 +412,19 @@ function Remove-LegacyInstall {
 }
 
 function Stop-NonSaverInstances {
-    # Windows keeps the .scr locked while any instance runs. Preview (/p), settings (/c) and
-    # /now instances are safe to end. A full-screen /s instance is NOT: force-killing the
-    # running screen saver leaves SPI_GETSCREENSAVERRUNNING stuck true until sign-out.
-    # (Get-Process -Name never matched .scr processes anyway — it only strips '.exe'.)
-    $procs = @(Get-CimInstance Win32_Process -Filter "Name='$appName.scr' OR Name='$appName.exe'" -ErrorAction SilentlyContinue)
+    # Windows keeps the .scr locked while any instance runs. Preview (/p), settings (/c),
+    # /now and the hotkey listener (/hotkey) are safe to end. A full-screen /s instance is NOT:
+    # force-killing the running screen saver leaves SPI_GETSCREENSAVERRUNNING stuck true until
+    # sign-out. (Get-Process -Name never matched .scr processes anyway — it only strips '.exe'.)
+    # Only this install's own processes (its companion dir, its System32 copy), so a sandboxed
+    # run never ends the real install's browser or listener.
+    $ourDir = [IO.Path]::GetFullPath($companionDir).TrimEnd('\') + '\'
+    $ourScr = Join-Path $system32 $scrName
+    $procs = @(Get-CimInstance Win32_Process -Filter "Name='$appName.scr' OR Name='$appName.exe'" -ErrorAction SilentlyContinue |
+        Where-Object {
+            $exe = "$($_.ExecutablePath)"
+            ($exe -ieq $ourScr) -or $exe.StartsWith($ourDir, [StringComparison]::OrdinalIgnoreCase)
+        })
     foreach ($p in $procs) {
         if ("$($p.CommandLine)" -imatch '\s[/-]s(\s|$)') {
             throw "$appName is running as the screen saver (pid $($p.ProcessId)). Dismiss it with the mouse or keyboard, then re-run."
@@ -435,6 +453,55 @@ if ($RemoveSystem32Step) {
         if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
     }
     exit 0
+}
+
+# ---- hotkey listener --------------------------------------------------------------------
+
+$runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+
+function Remove-HotkeyRunValue {
+    # The listener's sign-in entry ("Win4KSS", or "Win4KSS-test-..." from a test data root),
+    # and only when it starts something in this install's folder: a sandboxed uninstall must
+    # never remove the real one.
+    $props = Get-ItemProperty -Path $runKey -ErrorAction SilentlyContinue
+    if (-not $props) { return }
+    $prefix = [IO.Path]::GetFullPath($companionDir).TrimEnd('\') + '\'
+    foreach ($p in @($props.PSObject.Properties)) {
+        if ($p.Name -notlike "$appName*") { continue }
+        $exe = "$($p.Value)".Trim()
+        if ($exe.StartsWith('"')) { $exe = $exe.Substring(1, [Math]::Max(0, $exe.IndexOf('"', 1) - 1)) } else { $exe = ($exe -split ' ')[0] }
+        if ($exe.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+            Remove-ItemProperty -Path $runKey -Name $p.Name -ErrorAction SilentlyContinue
+            Write-Host "Removed the sign-in entry $($p.Name)" -ForegroundColor Green
+        }
+    }
+}
+
+function Start-HotkeyListener {
+    # The listener moves an old shortcut hotkey into settings, registers its own Run value and
+    # holds the hotkey; it exits at once when the hotkey is off. Waits until it holds its
+    # single-instance mutex (or has exited), so a browser opened next sees the migrated hotkey.
+    if (-not (Test-Path -LiteralPath $companionExe)) { return }
+    try {
+        $p = Start-Process -FilePath $companionExe -ArgumentList '/hotkey' -WorkingDirectory $companionDir -PassThru
+    } catch {
+        Write-Warning "Could not start the hotkey listener ($($_.Exception.Message)). It starts at the next sign-in, or when the clip browser opens."
+        return
+    }
+    $deadline = (Get-Date).AddSeconds(5)
+    while ((Get-Date) -lt $deadline) {
+        $m = $null
+        if ($p.HasExited -or [Threading.Mutex]::TryOpenExisting('Local\Win4KSS.Hotkey', [ref]$m)) {
+            if ($m) { $m.Dispose() }
+            break
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    if ($p.HasExited) {
+        Write-Host '  hotkey listener: not running (the hotkey is turned off)' -ForegroundColor Green
+    } else {
+        Write-Host "  hotkey listener: running (pid $($p.Id))" -ForegroundColor Green
+    }
 }
 
 # ---- uninstall --------------------------------------------------------------------------
@@ -476,6 +543,8 @@ if ($Uninstall) {
     # running (SPI_GETSCREENSAVERRUNNING stuck true) until sign-out. /p, /c and /now
     # instances are closed first and are safe to end.
     Stop-NonSaverInstances
+
+    Remove-HotkeyRunValue
 
     Restore-ScreenSaverRegistration
 
@@ -647,14 +716,20 @@ if ($companionIsSourceExe) {
 # ---- shortcuts --------------------------------------------------------------------------
 
 if (-not $SkipShortcuts) {
-    Write-Host 'Creating shortcuts...' -ForegroundColor Cyan
-
-    # Explorer only binds a .lnk hotkey for shortcuts under the Desktop or the Start Menu,
-    # so both are created rather than picking one. Both target the companion .exe.
-    New-TriggerShortcut -Path (Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) $shortcut) `
-                        -Target $companionExe -HotkeyValue $Hotkey
-    New-TriggerShortcut -Path (Join-Path ([Environment]::GetFolderPath('Programs')) $shortcut) `
-                        -Target $companionExe -HotkeyValue $Hotkey
+    # Optional launchers, nothing more: the hotkey works without them. A fresh install gets
+    # both; an existing one keeps the ones the user kept, re-pointed at the companion .exe
+    # (the Win4KAerial rename used the same file name). Removed ones stay removed.
+    $fresh = -not (Test-Path -LiteralPath (Join-Path $env:LOCALAPPDATA 'Win4KScreensavers\settings.json'))
+    $shortcutPaths = @((Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) $shortcut),
+                       (Join-Path ([Environment]::GetFolderPath('Programs')) $shortcut))
+    if ($fresh -or @($shortcutPaths | Where-Object { Test-Path -LiteralPath $_ }).Count -gt 0) {
+        Write-Host 'Shortcuts...' -ForegroundColor Cyan
+    }
+    foreach ($path in $shortcutPaths) {
+        if ($fresh -or (Test-Path -LiteralPath $path)) {
+            New-TriggerShortcut -Path $path -Target $companionExe
+        }
+    }
 }
 
 # ---- optionally activate ------------------------------------------------------------------
@@ -697,11 +772,17 @@ elseif (Test-LegacyScreenSaverPath $current) {
 # Last, so the new install is complete and registered before anything old goes away.
 Remove-LegacyInstall
 
+# ---- hotkey -------------------------------------------------------------------------------
+
+# Stop-NonSaverInstances ended any listener above; this one is the new version.
+if (-not $SkipHotkey) {
+    Write-Host 'Starting the hotkey listener...' -ForegroundColor Cyan
+    Start-HotkeyListener
+}
+
 Write-Host ''
 Write-Host 'Done.' -ForegroundColor Green
 Write-Host "  Configure : rundll32.exe desk.cpl,InstallScreenSaver $installed" -ForegroundColor Gray
 Write-Host "  Settings  : $installed /c" -ForegroundColor Gray
 Write-Host "  Try it    : $installed /s" -ForegroundColor Gray
-if (-not [string]::IsNullOrWhiteSpace($Hotkey)) {
-    Write-Host "  Hotkey    : $Hotkey (from the Desktop or Start Menu shortcut)" -ForegroundColor Gray
-}
+Write-Host '  Hotkey    : Settings > Start now in the clip browser (default Ctrl+Alt+S)' -ForegroundColor Gray

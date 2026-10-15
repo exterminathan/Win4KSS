@@ -27,8 +27,8 @@
          installer's version and the app's own version resource stay the same number.
          TODO(review): bump this and the installer's MyAppVersion together; nothing enforces
          they match besides this comment. -->
-    <Version>1.2.5</Version>
-    <FileVersion>1.2.5.0</FileVersion>
+    <Version>1.2.6</Version>
+    <FileVersion>1.2.6.0</FileVersion>
 
     <!-- PerMonitorV2 lives in app.manifest, not here: WinForms needs it at the Win32 level
          before any window is created, and cdima/aerial's mixed-DPI mis-sizing came from lacking it. -->

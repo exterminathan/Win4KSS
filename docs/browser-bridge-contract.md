@@ -205,10 +205,15 @@ source ids (`Rotation.SourcesOf`: `apple`, `aerial-manifests`, `archive-org`, `n
   About tab.
 - Enum values: `quality` = `Auto|Uhd4KSdr|Uhd4KHdr|Hd1080Sdr|Hd1080Hdr|Hd1080H264`,
   `multiMonitorMode` = `MainOnly|SameOnEach|DifferentVideos|SpanAll`.
-- Shortcut fields (host addition) reflect the real `.lnk` files (`ShortcutManager`).
-  `hotkey` is in the `.lnk` form `CTRL+ALT+S`; on save the host also accepts DOM
-  `KeyboardEvent.code` names (`Ctrl+Alt+KeyS`, `Digit1`), requires at least one of
-  Ctrl/Alt/Shift (else a `notice`), and `""`/null clears it.
+- Shortcut fields (host addition): `shortcutDesktop`/`shortcutStartMenu` reflect whether the
+  real `.lnk` files exist (`ShortcutManager`); they are optional launchers and carry no hotkey.
+  `hotkey` is `AppSettings.StartNowHotkey` (v1.2.6+; `null` in settings means the default
+  `CTRL+ALT+S`), in the form `CTRL+ALT+S`, or `null` when turned off. It is held by the
+  resident listener (`Win4KSS.exe /hotkey`, `HotkeyAgent`), independent of the shortcuts. On
+  save the host also accepts DOM `KeyboardEvent.code` names (`Ctrl+Alt+KeyS`, `Digit1`),
+  requires at least one of Ctrl/Alt/Shift (else a `notice`), and `""`/null turns it off. A new
+  hotkey is saved at once and the listener re-reads it (or is started / stopped); a `notice`
+  warns when another app already holds the combination.
 - `autoCheckForUpdates` (default `true`, see "Integration changes: auto-update" below) gates
   only the automatic check on open; a manual `checkUpdates` always runs regardless.
 - The host re-sends `settings` after every `saveSettings`: render what comes back.
@@ -232,7 +237,7 @@ source ids (`Rotation.SourcesOf`: `apple`, `aerial-manifests`, `archive-org`, `n
 | `panelRect` | `{ x, y, width, height, visible: bool }` | page tells host where to position the native preview `HWND`, in **viewport** CSS pixels: `getBoundingClientRect()` of the video box, so scroll is already applied; sent on resize/scroll/select/layout change. The host converts with the WebView zoom and monitor DPI. The native panel draws **above** all page content, so send `visible: false` whenever anything (a menu, a modal, the settings panel) covers the video box or it scrolls out of view; the host hides the panel and pauses mpv. The page's rule (`updatePanel` in app.js): hidden while any `.overlay` (settings, confirm dialog) is open, while a toast, the bulk bar or the off-canvas sidebar intersects the box, while the box is not wholly inside the detail pane, and while the document is hidden. Native popups (`<select>` lists) are separate windows and sit above the panel anyway |
 | `requestPreviews` | `{ keys: string[], kinds: "Still"\|"Hover"\|"Both" }` | `MediaPreviewService.Request(keys, PreviewKind)` — `kinds` string maps 1:1 to the flag enum member name. Every preview already decided (Ready, Placeholder, Failed, Unavailable, Missing) is answered at once with `previewReady`; Pending ones arrive when done. Background fill also emits `previewReady` for clips never requested: keep them |
 | `cancelPreviews` | `{ keys: string[] }` | `MediaPreviewService.Cancel(keys)`, for cards scrolled away. It drops **both** kinds for a key, still and hover, queued or running; a cancelled job sends nothing and can be requested again. The page uses it when the pointer moves to another card before a pending hover clip is ready (and only once that card's still is decided) |
-| `saveSettings` | `{ patch: { ...partial of settings.values } }` | applied to `AppSettings` at once, written 500 ms after the last edit; answered with `settings`. Unknown/read-only fields are ignored. `cacheBudgetGb` is clamped to ≥ 1 (lowering it evicts now). `cacheDirectory` and `ffmpegPath` take effect next launch (a `notice` says so). `localFolders` (the full list) reloads the catalogue. `autoAddSources` (the full list) sets every source's auto-add. Shortcut fields write the `.lnk` files at once |
+| `saveSettings` | `{ patch: { ...partial of settings.values } }` | applied to `AppSettings` at once, written 500 ms after the last edit; answered with `settings`. Unknown/read-only fields are ignored. `cacheBudgetGb` is clamped to ≥ 1 (lowering it evicts now). `cacheDirectory` and `ffmpegPath` take effect next launch (a `notice` says so). `localFolders` (the full list) reloads the catalogue. `autoAddSources` (the full list) sets every source's auto-add. Shortcut fields create or remove the `.lnk` files at once; `hotkey` is saved at once and handed to the hotkey listener |
 | `refreshCatalogs` | `{}` | `CatalogRefresher.RefreshAsync` over every auto source; streams `refreshProgress` (below), then a new `catalog` + full `stateDelta` (settings re-prepared, so new clips from auto-add sources join the rotation). Ignored while one is running |
 | `startNow` | `{ key? }` | starts the saver now (the `/now` path; honours the resume lock). With `key` ("Play now" in the detail pane) the saver opens with that clip, in rotation or not, then plays the rotation; an unknown key is ignored. A refusal comes back as a `notice` |
 | `purgeCache` | `{}` | `VideoCache.PurgeUnpinned()` (confirm in the page first); a `notice` reports the count |

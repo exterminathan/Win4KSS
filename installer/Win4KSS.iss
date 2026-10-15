@@ -157,9 +157,12 @@ Source: "..\publish\system32\{#MyAppScrName}"; DestDir: "{app}\system32"; Flags:
 Name: "{userprograms}\{#MyAppName}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Parameters: "/c"; WorkingDir: "{app}"; IconFilename: "{app}\win4kss.ico"; Comment: "Open the Win4KSS clip browser"
 Name: "{userprograms}\{#MyAppName}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"; IconFilename: "{app}\win4kss.ico"
 
-; The Desktop/Start Menu "Start Screen Saver.lnk" with its Ctrl+Alt+S hotkey is created by the
-; install-scr.ps1 [Run] step below, not here -- Inno's [Icons] section has no way to set a
-; shortcut's native Hotkey field, and that field is the entire point of that shortcut.
+; The optional Desktop/Start Menu "Start Screen Saver.lnk" launchers are created by the
+; install-scr.ps1 [Run] step below (fresh installs only; an update keeps the ones the user kept).
+; The Ctrl+Alt+S hotkey is not on them: install-scr.ps1 starts the resident hotkey listener
+; (Win4KSS.exe /hotkey), which holds the hotkey and adds itself to HKCU\...\Run. That step
+; runs for silent (in-app update) and interactive installs alike; PrepareToInstall below stops
+; the old listener first, since it keeps Win4KSS.exe and its DLLs open.
 
 [Run]
 Filename: "powershell.exe"; \
@@ -174,9 +177,9 @@ Filename: "{app}\{#MyAppExeName}"; Parameters: "/c"; Flags: nowait runasoriginal
 [UninstallRun]
 ; Runs as the FIRST step of uninstall, before Setup removes any files registered in [Files] --
 ; so install-scr.ps1 is still at {app}\install-scr.ps1 when this executes. It removes the
-; System32 copy (if any), the Desktop/Start Menu "Start Screen Saver.lnk" shortcuts, the whole
-; {app} companion dir, and repoints HKCU's SCRNSAVE.EXE away from the file we are about to
-; delete. It deliberately leaves %LOCALAPPDATA%\Win4KScreensavers (settings + the video cache)
+; System32 copy (if any), the Desktop/Start Menu "Start Screen Saver.lnk" shortcuts, the hotkey
+; listener and its HKCU Run entry, the whole {app} companion dir, and repoints HKCU's
+; SCRNSAVE.EXE away from the file we are about to delete. It deliberately leaves %LOCALAPPDATA%\Win4KScreensavers (settings + the video cache)
 ; alone -- CurUninstallStepChanged below asks about that separately, since it can be tens of GB
 ; and silently deleting someone's cache on every reinstall would be hostile.
 Filename: "powershell.exe"; \
@@ -200,6 +203,12 @@ const
   DotNetInstallerUrl = 'https://aka.ms/dotnet/10.0/windowsdesktop-runtime-win-x64.exe';
   // Where an admin-mode (pre-1.2.5) install registered itself for Apps & Features.
   MachineUninstallKey = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{FDEAF37E-5817-43BA-A346-B9BB300B9B46}_is1';
+
+  // The hotkey listener's single-instance mutex and its stop event (HotkeyAgent.cs).
+  HotkeyMutexName = 'Local\Win4KSS.Hotkey';
+  HotkeyStopEventName = 'Local\Win4KSS.Hotkey.Stop';
+  EVENT_MODIFY_STATE = $0002;
+  SYNCHRONIZE = $00100000;
 
 var
   // Set once in InitializeSetup and read everywhere else -- {app} is fixed (DisableDirPage=yes),
@@ -531,6 +540,42 @@ end;
 // export of the same moment, made with the NEW exe (so it carries whatever SettingsCli fixes
 // shipped after the version being upgraded from), happens separately below in
 // CurStepChanged(ssPostInstall), once that new exe actually exists at {app}.
+function OpenEvent(DesiredAccess: Cardinal; InheritHandle: LongBool; Name: String): THandle;
+  external 'OpenEventW@kernel32.dll stdcall';
+function SetEvent(Handle: THandle): LongBool;
+  external 'SetEvent@kernel32.dll stdcall';
+function OpenMutex(DesiredAccess: Cardinal; InheritHandle: LongBool; Name: String): THandle;
+  external 'OpenMutexW@kernel32.dll stdcall';
+function CloseHandle(Handle: THandle): LongBool;
+  external 'CloseHandle@kernel32.dll stdcall';
+
+// The hotkey listener holds Win4KSS.exe and its DLLs open, so it must be gone before [Files]
+// replaces them. It exits cleanly on its stop event; install-scr.ps1 starts the new one.
+// Nothing is running (OpenEvent fails) on a first install or an upgrade from before v1.2.6.
+procedure StopHotkeyListener();
+var
+  Handle: THandle;
+  I: Integer;
+begin
+  Handle := OpenEvent(EVENT_MODIFY_STATE, False, HotkeyStopEventName);
+  if Handle = 0 then
+    Exit;
+  SetEvent(Handle);
+  CloseHandle(Handle);
+  for I := 1 to 50 do
+  begin
+    Handle := OpenMutex(SYNCHRONIZE, False, HotkeyMutexName);
+    if Handle = 0 then
+    begin
+      Log('StopHotkeyListener: the hotkey listener has exited.');
+      Exit;
+    end;
+    CloseHandle(Handle);
+    Sleep(100);
+  end;
+  Log('StopHotkeyListener: the hotkey listener did not exit within 5 seconds.');
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   SettingsPath, BackupPath: String;
@@ -538,6 +583,8 @@ begin
   Result := InstallPrerequisites();
   if Result <> '' then
     Exit;
+
+  StopHotkeyListener();
 
   if not ExistingInstallDetected then
     Exit;

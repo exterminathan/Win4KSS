@@ -552,6 +552,9 @@ public class BrowserBridgeTests : IDisposable
         Assert.DoesNotContain("apple", s.AutoAddSources);
 
         Assert.Equal(new ShortcutOptions(true, false, "CTRL+ALT+K"), _host.Applied.Single());
+        // The hotkey is a setting of its own, handed to the listener after it is saved.
+        Assert.Equal("CTRL+ALT+K", s.StartNowHotkey);
+        Assert.Equal([("CTRL+ALT+K", (string?)ShortcutManager.DefaultHotkey)], _host.Hotkeys);
 
         var values = Messages("settings").Last().GetProperty("values");
         Assert.False(values.GetProperty("shuffle").GetBoolean());
@@ -571,8 +574,33 @@ public class BrowserBridgeTests : IDisposable
         Send(built.Bridge, new { type = "saveSettings", patch = new { hotkey = "K" } });
 
         Assert.Empty(_host.Applied);
+        Assert.Empty(_host.Hotkeys);
         Assert.Equal("warning", Messages("notice").Single().GetProperty("level").GetString());
         Assert.Equal(ShortcutManager.DefaultHotkey, Messages("settings").Last().GetProperty("values").GetProperty("hotkey").GetString());
+    }
+
+    [Fact]
+    public async Task The_hotkey_is_independent_of_the_shortcuts_and_can_be_turned_off()
+    {
+        var built = await CreateReady();
+        _host.HotkeyProblem = "Ctrl+Alt+J is already used by another app";
+
+        Send(built.Bridge, new { type = "saveSettings", patch = new { hotkey = "Ctrl+Alt+KeyJ" } });
+
+        Assert.Empty(_host.Applied); // no shortcut is rewritten for a hotkey change
+        Assert.Equal("CTRL+ALT+J", built.Settings.StartNowHotkey);
+        Assert.Equal("warning", Messages("notice").Single().GetProperty("level").GetString());
+
+        _host.HotkeyProblem = null;
+        Send(built.Bridge, new { type = "saveSettings", patch = new { hotkey = "" } });
+
+        Assert.Equal("", built.Settings.StartNowHotkey);
+        Assert.Equal([("CTRL+ALT+J", (string?)ShortcutManager.DefaultHotkey), ("", "CTRL+ALT+J")], _host.Hotkeys);
+        Assert.Equal(JsonValueKind.Null, Messages("settings").Last().GetProperty("values").GetProperty("hotkey").ValueKind);
+
+        // The same hotkey again is not a change.
+        Send(built.Bridge, new { type = "saveSettings", patch = new { hotkey = "" } });
+        Assert.Equal(2, _host.Hotkeys.Count);
     }
 
     [Fact]
@@ -1363,6 +1391,15 @@ public class BrowserBridgeTests : IDisposable
             Applied.Add(options);
             Shortcuts = options;
             return true;
+        }
+
+        public List<(string Hotkey, string? Previous)> Hotkeys { get; } = [];
+        public string? HotkeyProblem { get; set; }
+
+        public string? ApplyHotkey(string hotkey, string? previous)
+        {
+            Hotkeys.Add((hotkey, previous));
+            return HotkeyProblem;
         }
 
         public string? PickFolder(string title, string? initialPath) => PickResult;

@@ -692,15 +692,22 @@ public sealed class BrowserBridge : IDisposable
             }
         }
 
+        string? importedHotkey = null;
         if (file.Shortcuts is { } wantedShortcuts)
         {
             var current = CurrentShortcuts;
             var target = SettingsCli.Merge(current, wantedShortcuts);
-            if (target != current)
+            if (target.Desktop != current.Desktop || target.StartMenu != current.StartMenu)
             {
                 if (!_host.ApplyShortcuts(target))
                     notes.Add("the shortcuts could not be updated (see win4k.log)");
                 _shortcuts = _host.ReadShortcuts();
+            }
+            if (!string.Equals(target.Hotkey ?? "", current.Hotkey ?? "", StringComparison.OrdinalIgnoreCase))
+            {
+                importedHotkey = target.Hotkey ?? "";
+                _previousHotkey = current.Hotkey ?? "";
+                _settings.StartNowHotkey = importedHotkey;
             }
         }
 
@@ -715,6 +722,8 @@ public sealed class BrowserBridge : IDisposable
 
         ScheduleSave();
         FlushSave(); // other processes (the saver) read the rotation from disk
+        if (importedHotkey is not null)
+            ApplyHotkey(importedHotkey);
         _allDirty = true;
         _statsDirty = true;
         PostSettings();
@@ -876,6 +885,7 @@ public sealed class BrowserBridge : IDisposable
         var reload = false;
         var qualityChanged = false;
         ShortcutOptions? shortcuts = null;
+        string? hotkeyChange = null;
 
         foreach (var property in patch.EnumerateObject())
         {
@@ -965,7 +975,7 @@ public sealed class BrowserBridge : IDisposable
                     if (hotkey is null)
                         Notice("warning", $"\"{v.GetString()}\" is not a usable hotkey: it needs Ctrl, Alt or Shift plus a key.");
                     else
-                        shortcuts = (shortcuts ?? CurrentShortcuts) with { Hotkey = hotkey.Length == 0 ? null : hotkey };
+                        hotkeyChange = hotkey;
                     break;
                 }
 
@@ -978,9 +988,22 @@ public sealed class BrowserBridge : IDisposable
             }
         }
 
-        if (shortcuts is not null && shortcuts != CurrentShortcuts)
+        // The hotkey is a setting of its own, independent of the shortcuts: saved now (the
+        // listener reads settings.json), then handed to the listener.
+        if (hotkeyChange is not null &&
+            !string.Equals(hotkeyChange, CurrentShortcuts.Hotkey ?? "", StringComparison.OrdinalIgnoreCase))
         {
-            if (!_host.ApplyShortcuts(shortcuts))
+            _previousHotkey = CurrentShortcuts.Hotkey ?? "";
+            _settings.StartNowHotkey = hotkeyChange;
+            ScheduleSave();
+            FlushSave();
+            ApplyHotkey(hotkeyChange);
+        }
+
+        if (shortcuts is not null &&
+            (shortcuts.Desktop != CurrentShortcuts.Desktop || shortcuts.StartMenu != CurrentShortcuts.StartMenu))
+        {
+            if (!_host.ApplyShortcuts(shortcuts with { Hotkey = CurrentShortcuts.Hotkey }))
                 Notice("warning", "Could not update the Start Screen Saver shortcuts; see win4k.log.");
             _shortcuts = _host.ReadShortcuts();
         }
@@ -1001,7 +1024,24 @@ public sealed class BrowserBridge : IDisposable
             Background = LoadCatalogAsync(initial: false);
     }
 
-    private ShortcutOptions CurrentShortcuts => _shortcuts ??= _host.ReadShortcuts();
+    /// <summary>The shortcuts as they are on disk, with the hotkey from settings (it is not theirs).</summary>
+    private ShortcutOptions CurrentShortcuts
+    {
+        get
+        {
+            _shortcuts ??= _host.ReadShortcuts();
+            var hotkey = HotkeyAgent.Effective(_settings.StartNowHotkey);
+            return _shortcuts with { Hotkey = hotkey.Length == 0 ? null : hotkey };
+        }
+    }
+
+    private string? _previousHotkey;
+
+    private void ApplyHotkey(string hotkey)
+    {
+        if (_host.ApplyHotkey(hotkey, _previousHotkey) is { } problem)
+            Notice("warning", problem);
+    }
 
     private void SetBudget(double gb)
     {

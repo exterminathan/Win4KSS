@@ -74,8 +74,9 @@ them for you. **ffmpeg**, which makes the clip browser's previews, ships with Wi
    itself installs into your user folder and needs no admin rights; if you say no, everything
    works except the entry in Windows' list.
 5. Finish. You'll end up with:
-   - A **"Start Screen Saver"** shortcut on your Desktop and in the Start Menu, bound to
-     **Ctrl+Alt+S**.
+   - The **Ctrl+Alt+S** hotkey, ready straight away and after every sign-in.
+   - A **"Start Screen Saver"** shortcut on your Desktop and in the Start Menu (optional; you
+     can remove them and the hotkey keeps working).
    - A **"Win4KSS"** entry in the Start Menu that opens the clip browser.
 
 ## Using it
@@ -87,6 +88,10 @@ rather than waiting out your idle timeout. If Windows is set up to require your 
 show the lock screen) when the screen saver ends — **Settings → Personalization → Lock
 screen → Screen saver settings → "On resume, display logon screen"** — this hotkey honours
 that: the machine actually locks, not just shows a video. That's the entire point of it.
+
+It works anywhere in Windows, whether or not the shortcuts exist, and you can change or turn
+it off in the clip browser (gear icon → **Start now**). A tiny background helper listens for
+it; it starts when you sign in and shows up as "Win4KSS" in Task Manager's startup apps.
 
 ### The clip browser
 
@@ -114,9 +119,9 @@ where you pick what the screen saver actually plays:
   - **Playback** — video quality (4K SDR/HDR, 1080p variants).
   - **Cache** — the size budget slider, and a breakdown of how much is pinned ("kept
     offline") versus the normal rolling cache.
-  - **Start now** — the Desktop/Start Menu shortcut toggles and the hotkey recorder (click
-    the box, then press the combination you want; it needs at least one of Ctrl/Alt/Shift
-    plus a key).
+  - **Start now** — the hotkey recorder (click the box, then press the combination you want;
+    it needs at least one of Ctrl/Alt/Shift plus a key, and takes effect at once), and the
+    optional Desktop/Start Menu shortcut toggles.
   - **About** — version info, and an **Updates** section that checks for, downloads, and
     installs new releases. Updates install quietly — no installer pages and no Windows
     permission prompt — and the clip browser reopens on the new version.

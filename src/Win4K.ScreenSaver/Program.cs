@@ -17,7 +17,8 @@ internal static class Program
     ///   Win4KSS.scr /p HWND    render the preview thumbnail as a child of HWND
     ///   Win4KSS.scr /s         run full screen
     ///   Win4KSS.scr /w         run in a normal resizable window   (ours)
-    ///   Win4KSS.scr /now       start the configured saver at once (ours)
+    ///   Win4KSS.scr /now       start the configured saver at once (ours; the shortcuts run this)
+    ///   Win4KSS.exe /hotkey    the resident hotkey listener, started at sign-in (ours; see HotkeyAgent)
     ///   Win4KSS.exe --export-settings FILE                     write the readable settings export; no window (ours)
     ///   Win4KSS.exe --import-settings FILE [--include-machine] apply one; FILE must directly follow the verb (ours)
     ///
@@ -30,6 +31,21 @@ internal static class Program
         // The one-file .scr in System32 hands everything to the installed exe. See CompanionRelay.
         if (CompanionRelay.TryRelay(args, out var relayedExit))
             return relayedExit;
+
+        // The hotkey listener idles for hours: no WinForms, no natives, nothing it does not use.
+        if (ParseArguments(args).Verb == Verb.Hotkey)
+        {
+            Log.Info($"Launched with verb 'Hotkey' ({StartupMilliseconds()} ms after process start)");
+            try
+            {
+                return HotkeyAgent.Run();
+            }
+            catch (Exception ex)
+            {
+                Log.Error("Hotkey: the listener failed", ex);
+                return 2;
+            }
+        }
 
         // Only reached from System32 when the relay could not start the installed copy: borrow
         // its native DLLs and run here. See NativeDependencies.
@@ -45,7 +61,7 @@ internal static class Program
             Log.Error("UI thread exception", e.Exception);
 
         var (verb, argument) = ParseArguments(args);
-        Log.Info($"Launched with verb '{verb}'{(argument is null ? "" : $" arg '{argument}'")}");
+        Log.Info($"Launched with verb '{verb}'{(argument is null ? "" : $" arg '{argument}'")} ({StartupMilliseconds()} ms after process start)");
 
         switch (GateOnNatives(verb, natives))
         {
@@ -108,6 +124,20 @@ internal static class Program
         }
     }
 
+    /// <summary>How long this process took to reach Main's first log line: the cold-start cost, for the log.</summary>
+    private static long StartupMilliseconds()
+    {
+        try
+        {
+            using var self = Process.GetCurrentProcess();
+            return (long)(DateTime.Now - self.StartTime).TotalMilliseconds;
+        }
+        catch (Exception)
+        {
+            return -1;
+        }
+    }
+
     // ---- argument parsing ---------------------------------------------------------------
 
     internal enum Verb
@@ -117,6 +147,7 @@ internal static class Program
         FullScreen,
         Window,
         StartNow,
+        Hotkey,
         ExportSettings,
         ImportSettings,
         Unknown,
@@ -154,6 +185,7 @@ internal static class Program
             "s" or "show" => Verb.FullScreen,
             "w" or "window" or "windowed" => Verb.Window,
             "now" or "start" or "lock" => Verb.StartNow,
+            "hotkey" => Verb.Hotkey,
             "export-settings" => Verb.ExportSettings,
             "import-settings" => Verb.ImportSettings,
             _ => Verb.Unknown,
@@ -279,6 +311,11 @@ internal static class Program
                 Process.Start(new ProcessStartInfo(WebView2RuntimeUrl) { UseShellExecute = true });
             return 1;
         }
+
+        // The hotkey listener normally runs from sign-in; if it is not running (ended by an
+        // install, or never started), opening the browser brings the hotkey back.
+        if (!HotkeyAgent.IsRunning && HotkeyAgent.Effective(AppSettings.Load().StartNowHotkey).Length > 0)
+            HotkeyAgent.Start();
 
         Application.Run(new BrowserForm());
         GC.KeepAlive(mutex);

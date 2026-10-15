@@ -160,7 +160,7 @@ Two mechanisms, because they behave differently:
 
 `scripts/install-scr.ps1` creates the shortcut via `WScript.Shell`:
 - **Target** `%SystemRoot%\System32\Win4KAerial.scr`, **Arguments** `/now`
-- **Hotkey** `Ctrl+Alt+S` — `.lnk` files carry a native `HotKey` field that Explorer binds globally, so this needs **no background process, no tray icon, and no `RegisterHotKey` agent**. It only works for shortcuts on the Desktop or in the Start Menu, so the installer places one in each.
+- **Hotkey** `Ctrl+Alt+S` — *(superseded in v1.2.6 by a resident `RegisterHotKey` listener; see finding 13)* `.lnk` files carry a native `HotKey` field that Explorer binds globally, so this needs **no background process, no tray icon, and no `RegisterHotKey` agent**. It only works for shortcuts on the Desktop or in the Start Menu, so the installer places one in each.
 - Icon pulled from the `.scr` itself
 
 The stock `C:\Windows\System32\scrnsave.scr` (the blank built-in saver) is the same idea — any `.scr` run with `/s` starts immediately. We point at ours instead, and prefer `/now` for the reasons above.
@@ -387,3 +387,15 @@ drives auto-add; New comes from the catalogue's first-seen `addedUtc`.
   integration run still missed the handshake: the host waits for `ready`, and the page never
   posted it. The page now posts `ready` once every handler is registered. Chromium also
   re-sorts the keys of posted JSON, so key order means nothing on either side.
+
+### 13. The `.lnk` hotkey was slow and tied to the shortcuts — risk 6 came true
+
+Risk 6 predicted it. The hotkey only existed while a Desktop or Start Menu shortcut carried it,
+so turning the Desktop shortcut off could turn the hotkey off. It was also slow: in
+`win4k.log`, Explorer took 190–370 ms to spawn a cold `/now`, which then asked Windows to start
+the saver, so the screen switched 460–600 ms after the key press (more on a cold machine)
+against ~90 ms from the browser's already-running process. v1.2.6 takes the fallback the risk
+named, minus the tray icon: `Win4KSS.exe /hotkey` (`HotkeyAgent`) holds the hotkey with
+`RegisterHotKey`, starts from `HKCU\…\Run`, and calls `SaverLauncher.StartNow` warm (key →
+screen switch ~170 ms, measured). The hotkey moved into `settings.json`; the listener strips
+the old `.lnk` field, which Explorer otherwise keeps holding (`RegisterHotKey` → 1409).

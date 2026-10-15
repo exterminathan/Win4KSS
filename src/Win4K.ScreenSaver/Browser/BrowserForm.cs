@@ -331,9 +331,11 @@ internal sealed class BrowserForm : Form, IBrowserHost
         return true;
     }
 
-    public ShortcutOptions ReadShortcuts() => ShortcutManager.ReadOptions();
+    public ShortcutOptions ReadShortcuts() => ShortcutManager.ReadOptions(hotkey: null);
 
     public bool ApplyShortcuts(ShortcutOptions options) => ShortcutManager.Apply(options);
+
+    public string? ApplyHotkey(string hotkey, string? previous) => HotkeyAgent.Apply(hotkey, previous);
 
     public string? PickFolder(string title, string? initialPath)
     {
